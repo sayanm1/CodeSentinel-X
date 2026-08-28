@@ -1,0 +1,82 @@
+[
+  {
+    "cwe": "CWE-78",
+    "vulnerability": "Command Injection",
+    "title": "OS Command Injection",
+    "description": "Command injection occurs when untrusted input is incorporated into an operating-system command without proper validation or neutralization.",
+    "impact": "An attacker may execute unauthorized operating-system commands, access sensitive information, modify files, or compromise the host system.",
+    "common_causes": [
+      "Using subprocess with shell=True",
+      "Building operating-system commands using string concatenation",
+      "Passing untrusted user input directly to command execution functions"
+    ],
+    "mitigation": [
+      "Avoid shell=True whenever possible",
+      "Use subprocess.run() with shell=False",
+      "Pass commands as argument lists instead of shell command strings",
+      "Validate and sanitize untrusted input",
+      "Use absolute executable paths where appropriate"
+    ],
+    "secure_example": "subprocess.run(['ping', '-c', '1', hostname], shell=False)"
+  },
+  {
+    "cwe": "CWE-95",
+    "vulnerability": "Code Injection",
+    "title": "Improper Neutralization of Directives in Dynamically Evaluated Code",
+    "description": "Code injection occurs when attacker-controlled data is evaluated as executable programming language code.",
+    "impact": "An attacker may execute arbitrary application code and potentially gain complete control over the application process.",
+    "common_causes": [
+      "Using eval() on untrusted input",
+      "Using exec() on dynamically supplied input",
+      "Dynamically evaluating strings as Python code"
+    ],
+    "mitigation": [
+      "Avoid eval() and exec() with untrusted input",
+      "Use ast.literal_eval() when evaluating trusted literal data",
+      "Validate input before processing",
+      "Use structured data formats instead of executable strings"
+    ],
+    "secure_example": "import ast\nvalue = ast.literal_eval(user_input)"
+  },
+  {
+    "cwe": "CWE-502",
+    "vulnerability": "Unsafe Deserialization",
+    "title": "Deserialization of Untrusted Data",
+    "description": "Unsafe deserialization occurs when an application reconstructs objects from untrusted serialized data without sufficient validation.",
+    "impact": "An attacker may execute arbitrary code, manipulate application state, or cause denial of service depending on the serialization mechanism.",
+    "common_causes": [
+      "Using pickle.loads() on untrusted data",
+      "Deserializing objects received from untrusted sources",
+      "Trusting serialized data without validation"
+    ],
+    "mitigation": [
+      "Do not deserialize untrusted pickle data",
+      "Prefer JSON or other safe data formats",
+      "Validate deserialized data",
+      "Use strict schemas for incoming data",
+      "Only deserialize trusted data from controlled sources"
+    ],
+    "secure_example": "import json\nvalue = json.loads(untrusted_data)"
+  },
+  {
+    "cwe": "CWE-798",
+    "vulnerability": "Hardcoded Secret",
+    "title": "Use of Hard-coded Credentials",
+    "description": "Hardcoded credentials occur when passwords, API keys, tokens, or other secrets are embedded directly in application source code.",
+    "impact": "Attackers who obtain the source code may recover credentials and gain unauthorized access to systems or services.",
+    "common_causes": [
+      "Hardcoded passwords",
+      "API keys stored directly in source files",
+      "Database credentials embedded in application code",
+      "Authentication tokens embedded directly in application source code"
+    ],
+    "mitigation": [
+      "Use environment variables",
+      "Use a dedicated secrets manager",
+      "Never commit secrets to source control",
+      "Rotate exposed credentials immediately",
+      "Use different credentials for development and production"
+    ],
+    "secure_example": "import os\npassword = os.environ.get('APP_PASSWORD')"
+  }
+]
