@@ -28,6 +28,25 @@ CWE_MAP = {
 
 
 # ============================================================
+# CWE NAMES
+# ============================================================
+
+CWE_NAMES = {
+    "CWE-78":
+        "Improper Neutralization of Special Elements used in an OS Command",
+
+    "CWE-95":
+        "Improper Neutralization of Directives in Dynamically Evaluated Code",
+
+    "CWE-502":
+        "Deserialization of Untrusted Data",
+
+    "CWE-798":
+        "Use of Hard-coded Credentials",
+}
+
+
+# ============================================================
 # VULNERABILITY NORMALIZATION
 # ============================================================
 
@@ -198,6 +217,15 @@ def normalize_finding(finding):
             message
         )
 
+    # --------------------------------------------------------
+    # CWE NAME
+    # --------------------------------------------------------
+
+    cwe_name = CWE_NAMES.get(
+        cwe,
+        "Unknown"
+    )
+
     severity = normalize_severity(
         finding.get("severity"),
         vulnerability,
@@ -217,6 +245,7 @@ def normalize_finding(finding):
         "vulnerability": vulnerability,
         "cwe": cwe,
         "cwe_id": cwe,
+        "cwe_name": cwe_name,
         "severity": severity,
         "line": line,
         "description": message,
@@ -301,6 +330,7 @@ def analyze_security(
             "vulnerability": "Invalid Source",
             "cwe": None,
             "cwe_id": None,
+            "cwe_name": "Unknown",
             "line": 0,
             "severity": "INFO",
             "description": "Source code must be a string.",
@@ -321,6 +351,7 @@ def analyze_security(
             "vulnerability": "Syntax Error",
             "cwe": None,
             "cwe_id": None,
+            "cwe_name": "Unknown",
             "line": getattr(
                 error,
                 "lineno",
@@ -356,6 +387,7 @@ def analyze_security(
             ):
 
                 findings.append({
+
                     "vulnerability":
                         "Code Injection",
 
@@ -389,6 +421,7 @@ def analyze_security(
             ):
 
                 findings.append({
+
                     "vulnerability":
                         "Code Injection",
 
@@ -440,10 +473,12 @@ def analyze_security(
                             )
                             and keyword.value.value is True
                         ):
+
                             shell_true = True
 
                 # ------------------------------------------------
                 # IMPORTANT:
+                #
                 # Only shell=True is treated as an actual
                 # Command Injection vulnerability.
                 #
@@ -454,6 +489,7 @@ def analyze_security(
                 if shell_true:
 
                     findings.append({
+
                         "vulnerability":
                             "Command Injection",
 
@@ -498,6 +534,7 @@ def analyze_security(
                 }:
 
                     findings.append({
+
                         "vulnerability":
                             "Unsafe Deserialization",
 
@@ -561,6 +598,7 @@ def analyze_security(
                             ):
 
                                 findings.append({
+
                                     "vulnerability":
                                         "Hardcoded Secret",
 
@@ -638,11 +676,13 @@ pickle.loads(user)
     )
 
     print("=" * 60)
-    print("       CodeSentinel-X Unified Security Scanner")
+    print(
+        "       CodeSentinel-X Unified Security Scanner"
+    )
     print("=" * 60)
 
     print(
-        f"\\nTotal findings: {len(results)}"
+        f"\nTotal findings: {len(results)}"
     )
 
     for index, finding in enumerate(
@@ -651,25 +691,36 @@ pickle.loads(user)
     ):
 
         print("-" * 60)
+
         print(
             f"Finding #{index}"
         )
+
         print(
             "Vulnerability:",
             finding.get("vulnerability")
         )
+
         print(
             "CWE:",
             finding.get("cwe")
         )
+
+        print(
+            "CWE Name:",
+            finding.get("cwe_name")
+        )
+
         print(
             "Severity:",
             finding.get("severity")
         )
+
         print(
             "Line:",
             finding.get("line")
         )
+
         print(
             "Description:",
             finding.get("description")
