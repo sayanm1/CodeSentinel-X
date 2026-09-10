@@ -1,17 +1,9 @@
 """
 CodeSentinel-X Automated Repair Engine
 
-Provides deterministic security repair recommendations and
-safe candidate generation for supported vulnerability classes.
-
-Supported CWEs:
-    CWE-798 - Use of Hard-coded Credentials
-    CWE-78  - OS Command Injection
-    CWE-95  - Eval Injection / Code Injection
-    CWE-502 - Deserialization of Untrusted Data
+Provides deterministic repair strategies for supported
+security vulnerabilities and validates the generated repairs.
 """
-
-from __future__ import annotations
 
 import ast
 import re
@@ -19,49 +11,49 @@ from typing import Any, Dict, List, Optional
 
 
 # ============================================================
-# Repair Rules
+# REPAIR RULES
 # ============================================================
 
-REPAIR_RULES: Dict[str, Dict[str, Any]] = {
+REPAIR_RULES = {
     "CWE-798": {
         "vulnerability": "Hardcoded Secret",
         "root_cause": (
             "Sensitive credentials or secrets are embedded directly "
-            "in the source code."
+            "in source code."
         ),
         "strategy": (
-            "Move sensitive values to environment variables or a "
-            "dedicated secret-management system."
+            "Replace hardcoded credentials with environment-variable "
+            "lookups."
         ),
         "secure_example": (
-            'password = os.environ.get("APP_PASSWORD")'
+            "password = os.environ.get('PASSWORD')"
         ),
     },
 
     "CWE-78": {
         "vulnerability": "Command Injection",
         "root_cause": (
-            "User-controlled input is passed to a system command "
-            "through an unsafe subprocess configuration."
+            "User-controlled input is passed to an operating-system "
+            "command through a shell."
         ),
         "strategy": (
-            "Avoid shell interpretation and use a fixed executable "
-            "with a list of validated arguments."
+            "Disable shell execution and pass command arguments as a "
+            "structured argument list."
         ),
         "secure_example": (
-            'subprocess.run(["program", argument], shell=False, check=True)'
+            "subprocess.run(['echo', user_input], shell=False)"
         ),
     },
 
     "CWE-95": {
         "vulnerability": "Code Injection",
         "root_cause": (
-            "Untrusted input is evaluated as executable Python code "
-            "through eval() or exec()."
+            "Untrusted input is executed dynamically using eval() "
+            "or exec()."
         ),
         "strategy": (
-            "Avoid dynamic code execution. For structured data, use "
-            "safe parsers such as ast.literal_eval()."
+            "Avoid dynamic code execution. Use safe parsing such as "
+            "ast.literal_eval() or JSON parsing."
         ),
         "secure_example": (
             "value = ast.literal_eval(user_input)"
@@ -71,12 +63,11 @@ REPAIR_RULES: Dict[str, Dict[str, Any]] = {
     "CWE-502": {
         "vulnerability": "Unsafe Deserialization",
         "root_cause": (
-            "Untrusted serialized data is deserialized using an "
-            "unsafe mechanism such as pickle."
+            "Untrusted serialized data is deserialized using pickle."
         ),
         "strategy": (
-            "Use a safe data interchange format such as JSON and "
-            "validate the resulting data before use."
+            "Replace unsafe pickle deserialization with a safe "
+            "data format such as JSON."
         ),
         "secure_example": (
             "data = json.loads(user_input)"
@@ -86,172 +77,359 @@ REPAIR_RULES: Dict[str, Dict[str, Any]] = {
 
 
 # ============================================================
-# Utility Functions
+# CWE RESOLUTION
 # ============================================================
 
-def _normalize_cwe(cwe_id: Any) -> Optional[str]:
+def _resolve_cwe(
+    finding: Optional[Dict[str, Any]] = None,
+    vulnerability: Optional[str] = None,
+    cwe_id: Optional[str] = None,
+) -> Optional[str]:
     """
-    Normalize CWE identifiers into the format CWE-XXX.
+    Resolve the CWE identifier from a finding, vulnerability name,
+    or explicitly supplied CWE.
     """
-    if cwe_id is None:
-        return None
 
-    value = str(cwe_id).strip().upper()
+    if cwe_id:
+        cwe_id = str(cwe_id).upper()
 
-    if not value:
-        return None
+        if cwe_id.startswith("CWE-"):
+            return cwe_id
 
-    if value.startswith("CWE-"):
-        number = value.replace("CWE-", "", 1)
-    elif value.startswith("CWE"):
-        number = value.replace("CWE", "", 1).strip("-")
-    else:
-        number = value
+        if cwe_id.isdigit():
+            return f"CWE-{cwe_id}"
 
-    if number.isdigit():
-        return f"CWE-{number}"
+    if finding:
+        for key in ("cwe", "cwe_id", "CWE", "CWE-ID"):
+            value = finding.get(key)
 
-    return value
+            if value:
+                value = str(value).upper()
 
+                if value.startswith("CWE-"):
+                    return value
 
-def _resolve_cwe(finding: Optional[Dict[str, Any]]) -> Optional[str]:
-    """
-    Resolve a CWE from a finding dictionary.
-    """
-    if not finding:
-        return None
+                if value.isdigit():
+                    return f"CWE-{value}"
 
-    possible_keys = [
-        "cwe",
-        "cwe_id",
-        "CWE",
-        "CWE-ID",
-        "cweId",
-    ]
+    vulnerability_value = vulnerability
 
-    for key in possible_keys:
-        value = finding.get(key)
+    if vulnerability_value is None and finding:
+        vulnerability_value = (
+            finding.get("vulnerability")
+            or finding.get("type")
+            or finding.get("name")
+        )
 
-        if value:
-            normalized = _normalize_cwe(value)
+    if vulnerability_value:
+        normalized = str(vulnerability_value).lower()
 
-            if normalized in REPAIR_RULES:
-                return normalized
+        if "hardcoded" in normalized or "hard-coded" in normalized:
+            return "CWE-798"
 
-    vulnerability = str(
-        finding.get("vulnerability")
-        or finding.get("type")
-        or finding.get("issue")
-        or finding.get("title")
-        or ""
-    ).lower()
+        if "command injection" in normalized:
+            return "CWE-78"
 
-    if "hardcoded" in vulnerability or "hard-coded" in vulnerability:
-        return "CWE-798"
+        if "code injection" in normalized:
+            return "CWE-95"
 
-    if "command injection" in vulnerability:
-        return "CWE-78"
-
-    if "code injection" in vulnerability or "eval" in vulnerability:
-        return "CWE-95"
-
-    if "deserialization" in vulnerability or "deserialisation" in vulnerability:
-        return "CWE-502"
+        if "unsafe deserialization" in normalized:
+            return "CWE-502"
 
     return None
 
 
 # ============================================================
-# Generate Repair Recommendation
+# REPAIR GENERATION
 # ============================================================
 
 def generate_repair(
     finding: Optional[Dict[str, Any]] = None,
     vulnerability: Optional[str] = None,
     cwe_id: Optional[str] = None,
-    **kwargs: Any,
+    **kwargs,
 ) -> Dict[str, Any]:
     """
     Generate a deterministic repair recommendation.
 
-    Parameters
-    ----------
-    finding:
-        Optional finding dictionary produced by the security scanner.
+    Supports both:
 
-    vulnerability:
-        Optional vulnerability name.
+        generate_repair(finding)
 
-    cwe_id:
-        Optional CWE identifier.
+    and:
 
-    Returns
-    -------
-    dict
-        Repair recommendation and metadata.
+        generate_repair(
+            vulnerability="Hardcoded Secret",
+            cwe_id="CWE-798"
+        )
     """
 
-    finding = finding or {}
-
-    resolved_cwe = _normalize_cwe(cwe_id)
-
-    if resolved_cwe not in REPAIR_RULES:
-        resolved_cwe = _resolve_cwe(finding)
-
-    if resolved_cwe not in REPAIR_RULES and vulnerability:
-        vulnerability_lower = vulnerability.lower()
-
-        if "hardcoded" in vulnerability_lower:
-            resolved_cwe = "CWE-798"
-
-        elif "command injection" in vulnerability_lower:
-            resolved_cwe = "CWE-78"
-
-        elif (
-            "code injection" in vulnerability_lower
-            or "eval" in vulnerability_lower
-        ):
-            resolved_cwe = "CWE-95"
-
-        elif "deserialization" in vulnerability_lower:
-            resolved_cwe = "CWE-502"
+    resolved_cwe = _resolve_cwe(
+        finding=finding,
+        vulnerability=vulnerability,
+        cwe_id=cwe_id,
+    )
 
     if resolved_cwe not in REPAIR_RULES:
-       return {
-            "status": "REPAIR_NOT_AVAILABLE",
-            "repair_status": "REPAIR_NOT_AVAILABLE",
-            "vulnerability": (
-                vulnerability
-                or finding.get("vulnerability")
-                or "Unknown"
+        return {
+            "status": "REPAIR_UNAVAILABLE",
+            "repair_status": "REPAIR_UNAVAILABLE",
+            "vulnerability": vulnerability
+            or (finding or {}).get("vulnerability", "Unknown"),
+            "cwe": resolved_cwe,
+            "cwe_id": resolved_cwe,
+            "reason": (
+                "No deterministic repair rule is available "
+                "for this vulnerability."
             ),
-        "cwe": resolved_cwe,
-        "cwe_id": resolved_cwe,
-        "root_cause": "No supported deterministic repair rule found.",
-        "strategy": "Manual security review is required for this finding.",
-        "repair_strategy": "Manual security review is required for this finding.",
-        "secure_example": None,
-        "repair_confidence": 0.0,
+            "repair_confidence": 0.0,
         }
 
     rule = REPAIR_RULES[resolved_cwe]
 
     return {
-    "status": "REPAIR_AVAILABLE",
-    "repair_status": "REPAIR_AVAILABLE",
-    "vulnerability": rule["vulnerability"],
-    "cwe": resolved_cwe,
-    "cwe_id": resolved_cwe,
-    "root_cause": rule["root_cause"],
-    "strategy": rule["strategy"],
-    "repair_strategy": rule["strategy"],
-    "secure_example": rule["secure_example"],
-    "repair_confidence": 0.95,
+        "status": "REPAIR_AVAILABLE",
+        "repair_status": "REPAIR_AVAILABLE",
+
+        "vulnerability": rule["vulnerability"],
+
+        "cwe": resolved_cwe,
+        "cwe_id": resolved_cwe,
+
+        "root_cause": rule["root_cause"],
+
+        "strategy": rule["strategy"],
+        "repair_strategy": rule["strategy"],
+
+        "secure_example": rule["secure_example"],
+
+        "repair_confidence": 0.95,
     }
 
 
 # ============================================================
-# Apply Repair
+# HARD-CODED SECRET REPAIR
+# ============================================================
+
+def _repair_hardcoded_secret(code: str) -> str:
+    """
+    Replace hardcoded credential/secret assignments with
+    environment-variable lookups.
+
+    Examples:
+
+        password = "admin123"
+
+    becomes:
+
+        password = os.environ.get('PASSWORD')
+
+
+        database_password = "ProdPassword123"
+
+    becomes:
+
+        database_password = os.environ.get('DATABASE_PASSWORD')
+
+
+        api_key = "secret-key"
+
+    becomes:
+
+        api_key = os.environ.get('API_KEY')
+
+
+        secret_token = "token-value"
+
+    becomes:
+
+        secret_token = os.environ.get('SECRET_TOKEN')
+    """
+
+    # --------------------------------------------------------
+    # Make sure os is imported
+    # --------------------------------------------------------
+
+    if not re.search(
+        r"(?m)^\s*import\s+os\b",
+        code,
+    ):
+        code = "import os\n" + code
+
+    # --------------------------------------------------------
+    # Match simple assignments:
+    #
+    # password = "..."
+    # database_password = "..."
+    # api_key = "..."
+    # secret_token = "..."
+    #
+    # The current AST scanner detects hardcoded string literals
+    # assigned to variables, so this repair intentionally targets
+    # that same pattern.
+    # --------------------------------------------------------
+
+    assignment_pattern = re.compile(
+        r"""^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*
+            (["'])(.*?)\3\s*$""",
+        re.VERBOSE,
+    )
+
+    # --------------------------------------------------------
+    # Sensitive variable-name pattern
+    # --------------------------------------------------------
+
+    sensitive_pattern = re.compile(
+        r"(password|passwd|secret|api_key|apikey|token)",
+        re.IGNORECASE,
+    )
+
+    repaired_lines = []
+
+    for line in code.splitlines():
+
+        match = assignment_pattern.match(line)
+
+        # Not a simple assignment
+        if not match:
+            repaired_lines.append(line)
+            continue
+
+        indentation = match.group(1)
+        variable_name = match.group(2)
+
+        # Not a sensitive variable
+        if not sensitive_pattern.search(variable_name):
+            repaired_lines.append(line)
+            continue
+
+        # Convert variable name to environment-variable format
+        environment_key = variable_name.upper()
+
+        repaired_line = (
+            f"{indentation}"
+            f"{variable_name} = "
+            f"os.environ.get('{environment_key}')"
+        )
+
+        repaired_lines.append(repaired_line)
+
+    return "\n".join(repaired_lines)
+
+
+# ============================================================
+# COMMAND INJECTION REPAIR
+# ============================================================
+
+def _repair_command_injection(code: str) -> str:
+    """
+    Replace shell=True with shell=False.
+
+    This is intentionally deterministic and conservative.
+    """
+
+    repaired_code = re.sub(
+        r"\bshell\s*=\s*True\b",
+        "shell=False",
+        code,
+    )
+
+    return repaired_code
+
+
+# ============================================================
+# CODE INJECTION REPAIR
+# ============================================================
+
+def _repair_code_injection(code: str) -> str:
+    """
+    Replace simple eval()/exec() usage with safer parsing.
+
+    eval(user_input)
+        ->
+    ast.literal_eval(user_input)
+
+    For exec(), the safest deterministic fallback is also to
+    use ast.literal_eval() rather than dynamically executing code.
+    """
+
+    if not re.search(
+        r"(?m)^\s*import\s+ast\b",
+        code,
+    ):
+        code = "import ast\n" + code
+
+    # --------------------------------------------------------
+    # eval(...)
+    # --------------------------------------------------------
+
+    code = re.sub(
+        r"\beval\s*\(",
+        "ast.literal_eval(",
+        code,
+    )
+
+    # --------------------------------------------------------
+    # exec(...)
+    # --------------------------------------------------------
+
+    code = re.sub(
+        r"\bexec\s*\(",
+        "ast.literal_eval(",
+        code,
+    )
+
+    return code
+
+
+# ============================================================
+# UNSAFE DESERIALIZATION REPAIR
+# ============================================================
+
+def _repair_deserialization(code: str) -> str:
+    """
+    Replace pickle.loads()/pickle.load() with JSON parsing.
+
+    pickle.loads(data)
+        ->
+    json.loads(data)
+
+    pickle.load(file)
+        ->
+    json.load(file)
+    """
+
+    if not re.search(
+        r"(?m)^\s*import\s+json\b",
+        code,
+    ):
+        code = "import json\n" + code
+
+    # --------------------------------------------------------
+    # pickle.loads(...)
+    # --------------------------------------------------------
+
+    code = re.sub(
+        r"\bpickle\.loads\s*\(",
+        "json.loads(",
+        code,
+    )
+
+    # --------------------------------------------------------
+    # pickle.load(...)
+    # --------------------------------------------------------
+
+    code = re.sub(
+        r"\bpickle\.load\s*\(",
+        "json.load(",
+        code,
+    )
+
+    return code
+
+
+# ============================================================
+# APPLY SINGLE REPAIR
 # ============================================================
 
 def apply_repair(
@@ -259,261 +437,43 @@ def apply_repair(
     finding: Dict[str, Any],
 ) -> str:
     """
-    Apply the deterministic repair corresponding to a finding.
+    Apply the appropriate deterministic repair to source code.
     """
 
-    if not isinstance(code, str):
-        raise TypeError("code must be a string")
+    cwe = _resolve_cwe(finding=finding)
 
-    if not isinstance(finding, dict):
-        raise TypeError("finding must be a dictionary")
-
-    cwe_id = _resolve_cwe(finding)
-
-    if cwe_id == "CWE-798":
+    if cwe == "CWE-798":
         return _repair_hardcoded_secret(code)
 
-    if cwe_id == "CWE-78":
+    if cwe == "CWE-78":
         return _repair_command_injection(code)
 
-    if cwe_id == "CWE-95":
+    if cwe == "CWE-95":
         return _repair_code_injection(code)
 
-    if cwe_id == "CWE-502":
+    if cwe == "CWE-502":
         return _repair_deserialization(code)
 
     return code
 
 
 # ============================================================
-# CWE-798 - Hardcoded Secret
-# ============================================================
-
-def _repair_hardcoded_secret(code: str) -> str:
-    """
-    Replace common hardcoded secret assignments with an
-    environment-variable lookup.
-    """
-
-    lines = code.splitlines()
-
-    output: List[str] = []
-
-    import_os_present = bool(
-        re.search(r"^\s*import\s+os\s*$", code, re.MULTILINE)
-        or re.search(
-            r"^\s*from\s+os\s+import\s+",
-            code,
-            re.MULTILINE,
-        )
-    )
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Match assignments such as:
-        # password = "secret"
-        # api_key = "secret"
-        # token = "secret"
-        # secret = "secret"
-
-        pattern = re.compile(
-            r"""
-            ^(?P<indent>\s*)
-            (?P<name>
-                password|
-                passwd|
-                secret|
-                api_key|
-                apikey|
-                token
-            )
-            (?P<spacing>\s*=\s*)
-            (?P<quote>["'])
-            (?P<value>.*?)
-            (?P=quote)
-            \s*$
-            """,
-            re.IGNORECASE | re.VERBOSE,
-        )
-
-        match = pattern.match(line)
-
-        if match:
-            indent = match.group("indent")
-            name = match.group("name")
-
-            environment_name = "APP_PASSWORD"
-
-            if "api" in name.lower():
-                environment_name = "APP_API_KEY"
-
-            elif "token" in name.lower():
-                environment_name = "APP_TOKEN"
-
-            elif "secret" in name.lower():
-                environment_name = "APP_SECRET"
-
-            elif "passwd" in name.lower():
-                environment_name = "APP_PASSWORD"
-
-            output.append(
-                f'{indent}{name} = os.environ.get("{environment_name}")'
-            )
-        else:
-            output.append(line)
-
-    repaired = "\n".join(output)
-
-    if not import_os_present and "os.environ.get(" in repaired:
-        repaired = "import os\n" + repaired
-
-    return repaired
-
-
-# ============================================================
-# CWE-78 - Command Injection
-# ============================================================
-
-def _repair_command_injection(code: str) -> str:
-    """
-    Remove shell=True from subprocess calls.
-
-    This is intentionally deterministic and conservative.
-    """
-
-    repaired = re.sub(
-        r",\s*shell\s*=\s*True",
-        ", shell=False",
-        code,
-        flags=re.IGNORECASE,
-    )
-
-    repaired = re.sub(
-        r"\bshell\s*=\s*True",
-        "shell=False",
-        repaired,
-        flags=re.IGNORECASE,
-    )
-
-    return repaired
-
-
-# ============================================================
-# CWE-95 - Code Injection
-# ============================================================
-
-def _repair_code_injection(code: str) -> str:
-    """
-    Replace eval() with ast.literal_eval() and add the ast import.
-    """
-
-    repaired = re.sub(
-        r"\beval\s*\(",
-        "ast.literal_eval(",
-        code,
-    )
-
-    if repaired != code:
-        import_present = bool(
-            re.search(
-                r"^\s*import\s+ast\s*$",
-                repaired,
-                re.MULTILINE,
-            )
-            or re.search(
-                r"^\s*from\s+ast\s+import\s+",
-                repaired,
-                re.MULTILINE,
-            )
-        )
-
-        if not import_present:
-            repaired = "import ast\n" + repaired
-
-    return repaired
-
-
-# ============================================================
-# CWE-502 - Unsafe Deserialization
-# ============================================================
-
-def _repair_deserialization(code: str) -> str:
-    """
-    Replace pickle.loads() with json.loads() and ensure json
-    is imported.
-
-    Direct pickle import is removed if it is no longer referenced.
-    """
-
-    repaired = re.sub(
-        r"\bpickle\.loads\s*\(",
-        "json.loads(",
-        code,
-    )
-
-    if repaired != code:
-        import_json_present = bool(
-            re.search(
-                r"^\s*import\s+json\s*$",
-                repaired,
-                re.MULTILINE,
-            )
-            or re.search(
-                r"^\s*from\s+json\s+import\s+",
-                repaired,
-                re.MULTILINE,
-            )
-        )
-
-        if not import_json_present:
-            repaired = "import json\n" + repaired
-
-        # Remove direct pickle import if pickle is no longer used.
-        if "pickle." not in repaired:
-            repaired = re.sub(
-                r"^\s*import\s+pickle\s*$\n?",
-                "",
-                repaired,
-                flags=re.MULTILINE,
-            )
-
-            repaired = re.sub(
-                r"^\s*from\s+pickle\s+import\s+.*$\n?",
-                "",
-                repaired,
-                flags=re.MULTILINE,
-            )
-
-    return repaired
-
-
-# ============================================================
-# Generate Repaired Code
+# GENERATE REPAIRED CODE
 # ============================================================
 
 def generate_repaired_code(
     code: str,
-    findings: list,
+    findings: List[Dict[str, Any]],
 ) -> str:
     """
-    Apply all supported repairs to the supplied source code.
+    Apply repairs sequentially to all findings.
 
-    Findings are processed sequentially.
+    Findings are processed in the order provided.
     """
-
-    if not isinstance(code, str):
-        raise TypeError("code must be a string")
-
-    if not isinstance(findings, list):
-        raise TypeError("findings must be a list")
 
     repaired_code = code
 
     for finding in findings:
-        if not isinstance(finding, dict):
-            continue
-
         repaired_code = apply_repair(
             repaired_code,
             finding,
@@ -523,7 +483,7 @@ def generate_repaired_code(
 
 
 # ============================================================
-# Repair Validation
+# REPAIR VALIDATION
 # ============================================================
 
 def validate_repair(
@@ -531,13 +491,11 @@ def validate_repair(
     repaired_code: str,
 ) -> Dict[str, Any]:
     """
-    Validate the generated repair candidate.
-
-    The validation checks are deterministic and designed to verify
-    the four supported repair transformations.
+    Validate whether the repaired code satisfies the project's
+    supported security-repair requirements.
     """
 
-    result: Dict[str, Any] = {
+    result = {
         "syntax_valid": False,
         "shell_true_removed": False,
         "eval_removed": False,
@@ -545,7 +503,6 @@ def validate_repair(
         "environment_variable_used": False,
         "ast_literal_eval_used": False,
         "json_loads_used": False,
-        "all_passed": False,
     }
 
     # --------------------------------------------------------
@@ -555,73 +512,90 @@ def validate_repair(
     try:
         ast.parse(repaired_code)
         result["syntax_valid"] = True
-
-    except (SyntaxError, ValueError, TypeError):
+    except SyntaxError:
         result["syntax_valid"] = False
 
     # --------------------------------------------------------
-    # Command Injection validation
+    # shell=True validation
     # --------------------------------------------------------
 
-    result["shell_true_removed"] = (
-        "shell=True" not in repaired_code
-        and "shell = True" not in repaired_code
+    result["shell_true_removed"] = not bool(
+        re.search(
+            r"\bshell\s*=\s*True\b",
+            repaired_code,
+        )
     )
 
     # --------------------------------------------------------
-    # Code Injection validation
+    # eval / exec validation
+    #
+    # We specifically look for actual eval()/exec() calls.
+    # ast.literal_eval() must NOT be considered eval().
     # --------------------------------------------------------
 
     result["eval_removed"] = not bool(
         re.search(
-            r"(?<!literal_)\beval\s*\(",
+            r"(?<![\w.])(?:eval|exec)\s*\(",
             repaired_code,
         )
     )
 
     # --------------------------------------------------------
-    # Unsafe Deserialization validation
+    # pickle validation
     # --------------------------------------------------------
 
     result["pickle_removed"] = not bool(
         re.search(
-            r"\bpickle\.loads\s*\(",
+            r"\bpickle\.(?:load|loads)\s*\(",
             repaired_code,
         )
     )
 
     # --------------------------------------------------------
-    # Hardcoded Secret validation
+    # Environment-variable validation
     # --------------------------------------------------------
 
-    result["environment_variable_used"] = (
-        "os.environ.get(" in repaired_code
-        or "os.getenv(" in repaired_code
+    result["environment_variable_used"] = bool(
+        re.search(
+            r"os\.environ(?:\.get)?\s*\(",
+            repaired_code,
+        )
     )
 
     # --------------------------------------------------------
-    # Safe parser validation
+    # Safe AST parsing validation
     # --------------------------------------------------------
 
-    result["ast_literal_eval_used"] = (
-        "ast.literal_eval(" in repaired_code
+    result["ast_literal_eval_used"] = bool(
+        re.search(
+            r"\bast\.literal_eval\s*\(",
+            repaired_code,
+        )
     )
 
     # --------------------------------------------------------
-    # Safe deserialization validation
+    # Safe JSON parsing validation
     # --------------------------------------------------------
 
-    result["json_loads_used"] = (
-        "json.loads(" in repaired_code
+    result["json_loads_used"] = bool(
+        re.search(
+            r"\bjson\.loads\s*\(",
+            repaired_code,
+        )
     )
 
     # --------------------------------------------------------
     # IMPORTANT:
-    # Do NOT use all(result.values()) here.
     #
-    # result["all_passed"] is itself one of the values and is
-    # initially False, which would make all_passed permanently
-    # False.
+    # Do NOT use:
+    #
+    #     all(result.values())
+    #
+    # because a repair may legitimately need only one or two
+    # security-specific checks.
+    #
+    # The project currently validates the seven supported
+    # conditions explicitly.
     # --------------------------------------------------------
 
     validation_checks = [
@@ -640,9 +614,90 @@ def validate_repair(
 
 
 # ============================================================
-# Backward-Compatible Aliases
+# COMPATIBILITY ALIASES
 # ============================================================
 
 repair_finding = generate_repair
 
 generate_repair_candidate = generate_repair
+
+
+# ============================================================
+# OPTIONAL MODULE TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    vulnerable_code = """
+import pickle
+import subprocess
+
+password = "CompanyAdmin@123"
+database_password = "ProdDatabasePassword123"
+api_key = "sk-company-demo-123456789"
+secret_token = "enterprise-secret-token"
+
+user = input("Command: ")
+
+subprocess.call(
+    user,
+    shell=True
+)
+
+result = eval(user)
+
+data = pickle.loads(user)
+"""
+
+    findings = [
+        {
+            "vulnerability": "Hardcoded Secret",
+            "cwe": "CWE-798",
+        },
+        {
+            "vulnerability": "Command Injection",
+            "cwe": "CWE-78",
+        },
+        {
+            "vulnerability": "Code Injection",
+            "cwe": "CWE-95",
+        },
+        {
+            "vulnerability": "Unsafe Deserialization",
+            "cwe": "CWE-502",
+        },
+    ]
+
+    print("=" * 70)
+    print("CodeSentinel-X Repair Engine Demo")
+    print("=" * 70)
+
+    print("\n--- ORIGINAL CODE ---")
+    print(vulnerable_code)
+
+    repaired = generate_repaired_code(
+        vulnerable_code,
+        findings,
+    )
+
+    print("\n--- REPAIRED CODE ---")
+    print(repaired)
+
+    validation = validate_repair(
+        vulnerable_code,
+        repaired,
+    )
+
+    print("\n--- VALIDATION ---")
+
+    for key, value in validation.items():
+        print(f"{key}: {value}")
+
+    print("\n" + "=" * 70)
+
+    if validation["all_passed"]:
+        print("OVERALL RESULT: PASS")
+    else:
+        print("OVERALL RESULT: FAIL")
+
+    print("=" * 70)
