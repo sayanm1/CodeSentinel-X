@@ -269,12 +269,13 @@ function App() {
       // -----------------------------------------------------
 
       const finalStatus =
+        data.closed_loop_status === "PASS" ||
         data.result === "PASS" ||
         data.final_result === "PASS" ||
         data.status === "PASS" ||
         (
-          validationPassed === true &&
-          remainingCount === 0
+          remainingCount === 0 &&
+          validationPassed === true
         )
           ? "PASS"
           : "FAIL";

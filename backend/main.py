@@ -377,6 +377,7 @@ def api_repair(
         validation = validate_repair(
             request.code,
             repaired_code,
+            findings=findings,
         )
 
         # ----------------------------------------------------
@@ -475,6 +476,7 @@ def api_closed_loop(
         validation = validate_repair(
             request.code,
             repaired_code,
+            findings=initial_findings,
         )
 
         # ----------------------------------------------------
@@ -519,12 +521,14 @@ def api_closed_loop(
         # STEP 7 — Determine closed-loop result
         # ----------------------------------------------------
 
+        # Closed-loop success is determined by the actual security
+        # outcome first: every initially detected finding must be gone.
+        # Validation is supplementary and is evaluated only for the
+        # checks that are applicable to the original findings.
         closed_loop_pass = (
-            validation.get(
-                "all_passed",
-                False,
-            )
-            and remaining_count == 0
+            remaining_count == 0
+            and validation.get("syntax_valid", False) is True
+            and validation.get("all_passed", False) is True
         )
 
         # ----------------------------------------------------

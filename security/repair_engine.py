@@ -489,126 +489,142 @@ def generate_repaired_code(
 def validate_repair(
     original_code: str,
     repaired_code: str,
+    findings: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    Validate whether the repaired code satisfies the project's
-    supported security-repair requirements.
+    Validate the repaired source code using only checks that are
+    applicable to vulnerabilities actually present in the original
+    source code.
+
+    This prevents unrelated checks from causing a false FAIL. For
+    example, a file containing only a hardcoded password does not
+    need ast.literal_eval() or json.loads().
     """
 
-    result = {
+    result: Dict[str, Any] = {
         "syntax_valid": False,
-        "shell_true_removed": False,
-        "eval_removed": False,
-        "pickle_removed": False,
-        "environment_variable_used": False,
-        "ast_literal_eval_used": False,
-        "json_loads_used": False,
+        "shell_true_removed": "N/A",
+        "eval_removed": "N/A",
+        "pickle_removed": "N/A",
+        "environment_variable_used": "N/A",
+        "ast_literal_eval_used": "N/A",
+        "json_loads_used": "N/A",
     }
 
     # --------------------------------------------------------
-    # Syntax validation
+    # Determine applicable security checks from original source
+    # --------------------------------------------------------
+
+    original = original_code if isinstance(original_code, str) else ""
+    repaired = repaired_code if isinstance(repaired_code, str) else ""
+
+    applicable = {
+        "shell_true_removed": bool(
+            re.search(r"\bshell\s*=\s*True\b", original)
+        ),
+        "eval_removed": bool(
+            re.search(r"(?<![\w.])(?:eval|exec)\s*\(", original)
+        ),
+        "pickle_removed": bool(
+            re.search(r"\bpickle\.(?:load|loads)\s*\(", original)
+        ),
+        "environment_variable_used": bool(
+            re.search(
+                r"(?m)^\s*(?:password|passwd|secret|api[_-]?key|apikey|token)\s*=\s*['\"]",
+                original,
+            )
+        ),
+        "ast_literal_eval_used": bool(
+            re.search(r"(?<![\w.])(?:eval|exec)\s*\(", original)
+        ),
+        "json_loads_used": bool(
+            re.search(r"\bpickle\.(?:load|loads)\s*\(", original)
+        ),
+    }
+
+    # If findings were supplied, use their CWEs as an additional source
+    # of applicability. This makes validation robust for normalized
+    # scanner output and large files.
+    if findings:
+        cwes = {
+            str(f.get("cwe") or f.get("cwe_id") or "").upper()
+            for f in findings
+            if isinstance(f, dict)
+        }
+
+        if "CWE-78" in cwes:
+            applicable["shell_true_removed"] = True
+
+        if "CWE-95" in cwes:
+            applicable["eval_removed"] = True
+            applicable["ast_literal_eval_used"] = True
+
+        if "CWE-502" in cwes:
+            applicable["pickle_removed"] = True
+            applicable["json_loads_used"] = True
+
+        if "CWE-798" in cwes:
+            applicable["environment_variable_used"] = True
+
+    # --------------------------------------------------------
+    # Syntax validation is always required
     # --------------------------------------------------------
 
     try:
-        ast.parse(repaired_code)
+        ast.parse(repaired)
         result["syntax_valid"] = True
-    except SyntaxError:
+    except (SyntaxError, TypeError):
         result["syntax_valid"] = False
 
     # --------------------------------------------------------
-    # shell=True validation
+    # Applicable security checks
     # --------------------------------------------------------
 
-    result["shell_true_removed"] = not bool(
-        re.search(
-            r"\bshell\s*=\s*True\b",
-            repaired_code,
+    if applicable["shell_true_removed"]:
+        result["shell_true_removed"] = not bool(
+            re.search(r"\bshell\s*=\s*True\b", repaired)
         )
-    )
 
-    # --------------------------------------------------------
-    # eval / exec validation
-    #
-    # We specifically look for actual eval()/exec() calls.
-    # ast.literal_eval() must NOT be considered eval().
-    # --------------------------------------------------------
-
-    result["eval_removed"] = not bool(
-        re.search(
-            r"(?<![\w.])(?:eval|exec)\s*\(",
-            repaired_code,
+    if applicable["eval_removed"]:
+        result["eval_removed"] = not bool(
+            re.search(r"(?<![\w.])(?:eval|exec)\s*\(", repaired)
         )
-    )
 
-    # --------------------------------------------------------
-    # pickle validation
-    # --------------------------------------------------------
-
-    result["pickle_removed"] = not bool(
-        re.search(
-            r"\bpickle\.(?:load|loads)\s*\(",
-            repaired_code,
+    if applicable["pickle_removed"]:
+        result["pickle_removed"] = not bool(
+            re.search(r"\bpickle\.(?:load|loads)\s*\(", repaired)
         )
-    )
 
-    # --------------------------------------------------------
-    # Environment-variable validation
-    # --------------------------------------------------------
-
-    result["environment_variable_used"] = bool(
-        re.search(
-            r"os\.environ(?:\.get)?\s*\(",
-            repaired_code,
+    if applicable["environment_variable_used"]:
+        result["environment_variable_used"] = bool(
+            re.search(r"os\.environ(?:\.get)?\s*\(", repaired)
         )
-    )
 
-    # --------------------------------------------------------
-    # Safe AST parsing validation
-    # --------------------------------------------------------
-
-    result["ast_literal_eval_used"] = bool(
-        re.search(
-            r"\bast\.literal_eval\s*\(",
-            repaired_code,
+    if applicable["ast_literal_eval_used"]:
+        result["ast_literal_eval_used"] = bool(
+            re.search(r"\bast\.literal_eval\s*\(", repaired)
         )
-    )
 
-    # --------------------------------------------------------
-    # Safe JSON parsing validation
-    # --------------------------------------------------------
-
-    result["json_loads_used"] = bool(
-        re.search(
-            r"\bjson\.loads\s*\(",
-            repaired_code,
+    if applicable["json_loads_used"]:
+        result["json_loads_used"] = bool(
+            re.search(r"\bjson\.loads\s*\(", repaired)
         )
-    )
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # Do NOT use:
-    #
-    #     all(result.values())
-    #
-    # because a repair may legitimately need only one or two
-    # security-specific checks.
-    #
-    # The project currently validates the seven supported
-    # conditions explicitly.
+    # Final validation status
     # --------------------------------------------------------
 
-    validation_checks = [
-        result["syntax_valid"],
-        result["shell_true_removed"],
-        result["eval_removed"],
-        result["pickle_removed"],
-        result["environment_variable_used"],
-        result["ast_literal_eval_used"],
-        result["json_loads_used"],
-    ]
+    validation_checks = [result["syntax_valid"]]
+
+    for key, is_applicable in applicable.items():
+        if is_applicable:
+            validation_checks.append(result[key] is True)
 
     result["all_passed"] = all(validation_checks)
+    result["applicable_checks"] = [
+        key for key, is_applicable in applicable.items()
+        if is_applicable
+    ]
 
     return result
 
