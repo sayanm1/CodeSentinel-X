@@ -46,6 +46,10 @@ CWE_MAP = {
     "unrestricted upload": "CWE-434",
     "unsafe file upload": "CWE-434",
     "file upload": "CWE-434",
+
+    # CWE-352 ? Cross-Site Request Forgery
+    "cross-site request forgery": "CWE-352",
+    "csrf": "CWE-352",
 }
 
 
@@ -77,6 +81,9 @@ CWE_NAMES = {
 
     "CWE-434":
         "Unrestricted Upload of File with Dangerous Type",
+
+    "CWE-352":
+        "Cross-Site Request Forgery",
 }
 
 
@@ -146,6 +153,12 @@ def normalize_vulnerability(value):
         or "file upload" in value
     ):
         return "Unrestricted File Upload"
+
+    if (
+        "cross-site request forgery" in value
+        or value == "csrf"
+    ):
+        return "Cross-Site Request Forgery"
 
     return value.title()
 
@@ -267,6 +280,8 @@ def normalize_severity(
         or "unrestricted file upload" in text
         or "unrestricted upload" in text
         or "unsafe file upload" in text
+        or "cross-site request forgery" in text
+        or "csrf" in text
     ):
         return "HIGH"
 
@@ -994,6 +1009,159 @@ def scan_ast(
                             "filename":
                                 filename,
                         })
+
+        # ====================================================
+        # CWE-352 ? CROSS-SITE REQUEST FORGERY
+        # ====================================================
+
+        # Conservative Flask-focused heuristic:
+        # Detect state-changing routes that consume request data
+        # without visible CSRF/token/origin protection.
+        #
+        # This is intentionally a static-analysis heuristic and
+        # does not claim to prove CSRF in every framework.
+
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+
+            route_methods = set()
+            has_route = False
+
+            for decorator in node.decorator_list:
+
+                if (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and decorator.func.attr == "route"
+                ):
+
+                    has_route = True
+
+                    for keyword in decorator.keywords:
+
+                        if keyword.arg == "methods":
+
+                            if isinstance(
+                                keyword.value,
+                                (ast.List, ast.Tuple, ast.Set),
+                            ):
+
+                                for method in keyword.value.elts:
+
+                                    if (
+                                        isinstance(
+                                            method,
+                                            ast.Constant,
+                                        )
+                                        and isinstance(
+                                            method.value,
+                                            str,
+                                        )
+                                    ):
+
+                                        route_methods.add(
+                                            method.value.upper()
+                                        )
+
+                    if not route_methods:
+                        route_methods.add("GET")
+
+            if has_route and route_methods.intersection(
+                {"POST", "PUT", "PATCH", "DELETE"}
+            ):
+
+                function_text = ""
+
+                for child in ast.walk(node):
+
+                    if isinstance(
+                        child,
+                        ast.Name,
+                    ):
+
+                        function_text += (
+                            " " + child.id.lower()
+                        )
+
+                    elif isinstance(
+                        child,
+                        ast.Attribute,
+                    ):
+
+                        function_text += (
+                            " " + child.attr.lower()
+                        )
+
+                    elif isinstance(
+                        child,
+                        ast.Constant,
+                    ):
+
+                        if isinstance(
+                            child.value,
+                            str,
+                        ):
+
+                            function_text += (
+                                " " + child.value.lower()
+                            )
+
+                uses_request_data = any(
+                    marker in function_text
+                    for marker in {
+                        "request",
+                        "request.form",
+                        "request.args",
+                        "request.data",
+                        "request.json",
+                        "request.files",
+                    }
+                )
+
+                has_csrf_protection = any(
+                    marker in function_text
+                    for marker in {
+                        "csrf",
+                        "csrf_token",
+                        "validate_csrf",
+                        "validate_csrf_token",
+                        "wtforms.csrf",
+                        "origin",
+                        "referer",
+                        "x-csrf-token",
+                        "x-csrftoken",
+                    }
+                )
+
+                if (
+                    uses_request_data
+                    and not has_csrf_protection
+                ):
+
+                    findings.append({
+
+                        "vulnerability":
+                            "Cross-Site Request Forgery",
+
+                        "cwe":
+                            "CWE-352",
+
+                        "line":
+                            node.lineno,
+
+                        "severity":
+                            "HIGH",
+
+                        "description":
+                            "A state-changing web route consumes "
+                            "request data without visible CSRF, "
+                            "token, or origin validation.",
+
+                        "filename":
+                            filename,
+                    })
 
         # ====================================================
         # ASSIGNMENT DETECTORS
