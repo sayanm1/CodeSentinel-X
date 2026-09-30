@@ -35,6 +35,11 @@ CWE_MAP = {
 
     "server_side_template_injection": "CWE-1336",
     "ssti": "CWE-1336",
+
+    # Batch 2 — File & Network Security
+    "path_traversal": "CWE-22",
+    "directory_traversal": "CWE-22",
+    "path_traversal_attack": "CWE-22",
 }
 
 
@@ -43,6 +48,9 @@ CWE_MAP = {
 # ============================================================
 
 CWE_NAMES = {
+    "CWE-22":
+        "Improper Limitation of a Pathname to a Restricted Directory",
+
     "CWE-78":
         "Improper Neutralization of Special Elements used in an OS Command",
 
@@ -76,6 +84,17 @@ def normalize_vulnerability(name):
         return "Security Vulnerability"
 
     value = str(name).lower().strip()
+
+    # --------------------------------------------------------
+    # Batch 2 — Path Traversal
+    # --------------------------------------------------------
+
+    if (
+        "path traversal" in value
+        or "directory traversal" in value
+        or "path_traversal" in value
+    ):
+        return "Path Traversal"
 
     # --------------------------------------------------------
     # Batch 1 — XSS
@@ -160,6 +179,18 @@ def normalize_vulnerability(name):
 def infer_cwe(vulnerability, message=""):
 
     text = f"{vulnerability} {message}".lower()
+
+    # --------------------------------------------------------
+    # Batch 2 — Path Traversal
+    # --------------------------------------------------------
+
+    if (
+        "path traversal" in text
+        or "directory traversal" in text
+        or "pathname" in text
+        or "restricted directory" in text
+    ):
+        return "CWE-22"
 
     # --------------------------------------------------------
     # Batch 1 — XSS
@@ -290,6 +321,13 @@ def normalize_severity(
         or "xss" in text
         or "template injection" in text
         or "ssti" in text
+    ):
+        return "HIGH"
+
+    # Path traversal
+    if (
+        "path traversal" in text
+        or "directory traversal" in text
     ):
         return "HIGH"
 
@@ -439,7 +477,7 @@ def deduplicate_findings(findings):
 
 
 # ============================================================
-# HELPER FUNCTIONS FOR BATCH 1
+# HELPER FUNCTIONS FOR BATCH 1 / BATCH 2
 # ============================================================
 
 def _get_source_segment(code, node):
@@ -464,7 +502,8 @@ def _contains_user_input(node):
     Conservative AST check for expressions that appear to use
     externally supplied input.
 
-    This is intentionally pattern-based. It does not execute code.
+    This is intentionally pattern-based.
+    It does not execute code.
     """
 
     for child in ast.walk(node):
@@ -478,7 +517,8 @@ def _contains_user_input(node):
             ):
                 return True
 
-            # request.args / request.form / request.values / etc.
+            # request.args / request.form /
+            # request.values / request.data / etc.
             if isinstance(child.func, ast.Attribute):
 
                 if isinstance(
@@ -521,30 +561,6 @@ def _contains_user_input(node):
                 ):
                     return True
 
-        # request.args / request.form / request.values
-        if isinstance(child, ast.Attribute):
-
-            source = _get_source_segment(
-                "",
-                child
-            ).lower()
-
-            if any(
-                marker in source
-                for marker in [
-                    "request.args",
-                    "request.form",
-                    "request.values",
-                    "request.data",
-                    "request.json",
-                    "request.query_params",
-                    "req.args",
-                    "req.form",
-                    "req.values",
-                ]
-            ):
-                return True
-
         # Variables commonly populated from input()
         if isinstance(child, ast.Name):
 
@@ -552,11 +568,17 @@ def _contains_user_input(node):
                 "user_input",
                 "userinput",
                 "input_data",
-                "input_data",
                 "query",
                 "query_string",
                 "user_query",
                 "request_data",
+                "filename",
+                "file_name",
+                "filepath",
+                "file_path",
+                "path",
+                "user_path",
+                "requested_path",
             }:
                 return True
 
@@ -701,6 +723,56 @@ def analyze_security(
         # ====================================================
 
         if isinstance(node, ast.Call):
+
+            # =================================================
+            # BATCH 2 — PATH TRAVERSAL
+            # =================================================
+
+            file_functions = {
+                "open",
+            }
+
+            if (
+                isinstance(
+                    node.func,
+                    ast.Name
+                )
+                and node.func.id in file_functions
+            ):
+
+                if node.args:
+
+                    path_argument = node.args[0]
+
+                    user_controlled = _contains_user_input(
+                        path_argument
+                    )
+
+                    if user_controlled:
+
+                        findings.append({
+
+                            "vulnerability":
+                                "Path Traversal",
+
+                            "cwe":
+                                "CWE-22",
+
+                            "line":
+                                node.lineno,
+
+                            "severity":
+                                "HIGH",
+
+                            "description":
+                                "User-controlled path is passed "
+                                "to a file operation and may allow "
+                                "path traversal outside the intended "
+                                "directory.",
+
+                            "filename":
+                                filename,
+                        })
 
             # ------------------------------------------------
             # EVAL
@@ -947,11 +1019,6 @@ def analyze_security(
                 if node.args:
 
                     output_argument = node.args[0]
-
-                    source = _get_source_segment(
-                        code,
-                        output_argument
-                    ).lower()
 
                     dynamic = (
                         _expression_contains_string_formatting(
@@ -1344,6 +1411,9 @@ from jinja2 import Template
 template = Template(
     "<h1>" + user + "</h1>"
 )
+
+with open(user, "r") as file:
+    data = file.read()
 """
 
     results = analyze_security(
