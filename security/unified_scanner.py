@@ -29,6 +29,7 @@ CWE_MAP = {
     # CWE-862 — Missing Authorization
     "missing authorization": "CWE-862",
     "incorrect authorization": "CWE-863",
+    "improper access control": "CWE-284",
 
     # Batch 1 â€” Injection
     "cross-site scripting": "CWE-79",
@@ -1583,6 +1584,209 @@ def scan_ast(
                             "operates on a user-controlled "
                             "resource without visible resource-level "
                             "ownership or authorization enforcement.",
+
+                        "filename":
+                            filename,
+                    })
+
+        # ====================================================
+        # CWE-284 ? IMPROPER ACCESS CONTROL
+        # ====================================================
+
+        # Conservative Flask-focused heuristic:
+        #
+        # Detect state-changing routes that expose sensitive
+        # administrative or privileged operations without a
+        # visible access-control mechanism.
+        #
+        # This detector focuses on broad access-control absence.
+        # CWE-862 and CWE-863 specifically target missing or
+        # incorrect authorization around authenticated resources.
+        #
+        # This is a static-analysis heuristic and does not claim
+        # to prove an access-control vulnerability in every
+        # framework or application.
+
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+
+            route_methods = set()
+            has_route = False
+
+            # Detect Flask routes and their HTTP methods.
+            for decorator in node.decorator_list:
+
+                if (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and decorator.func.attr == "route"
+                ):
+
+                    has_route = True
+
+                    for keyword in decorator.keywords:
+
+                        if keyword.arg == "methods":
+
+                            if isinstance(
+                                keyword.value,
+                                (ast.List, ast.Tuple, ast.Set),
+                            ):
+
+                                for method in keyword.value.elts:
+
+                                    if (
+                                        isinstance(
+                                            method,
+                                            ast.Constant,
+                                        )
+                                        and isinstance(
+                                            method.value,
+                                            str,
+                                        )
+                                    ):
+
+                                        route_methods.add(
+                                            method.value.upper()
+                                        )
+
+                    # Flask routes default to GET.
+                    if not route_methods:
+                        route_methods.add("GET")
+
+            if has_route:
+
+                function_text = ""
+
+                # Collect names, attributes and string constants
+                # from the complete function.
+                for child in ast.walk(node):
+
+                    if isinstance(
+                        child,
+                        ast.Name,
+                    ):
+
+                        function_text += (
+                            " " + child.id.lower()
+                        )
+
+                    elif isinstance(
+                        child,
+                        ast.Attribute,
+                    ):
+
+                        function_text += (
+                            " " + child.attr.lower()
+                        )
+
+                    elif isinstance(
+                        child,
+                        ast.Constant,
+                    ):
+
+                        if isinstance(
+                            child.value,
+                            str,
+                        ):
+
+                            function_text += (
+                                " " + child.value.lower()
+                            )
+
+                # Potentially privileged or sensitive operation.
+                privileged_operation = any(
+                    marker in function_text
+                    for marker in {
+                        "admin",
+                        "administrator",
+                        "manage_users",
+                        "manageusers",
+                        "delete_user",
+                        "deleteuser",
+                        "create_user",
+                        "createuser",
+                        "update_role",
+                        "updaterole",
+                        "grant",
+                        "revoke",
+                        "permission",
+                        "permissions",
+                        "role",
+                        "roles",
+                        "privilege",
+                        "privileges",
+                        "settings",
+                        "configuration",
+                        "config",
+                    }
+                )
+
+                # Visible access-control mechanism.
+                has_access_control = any(
+                    marker in function_text
+                    for marker in {
+                        "admin_required",
+                        "is_admin",
+                        "is_administrator",
+                        "admin_user",
+                        "require_admin",
+                        "require_role",
+                        "role_required",
+                        "has_role",
+                        "check_role",
+                        "check_permission",
+                        "has_permission",
+                        "permission_check",
+                        "authorize",
+                        "authorization",
+                        "access_allowed",
+                        "access_control",
+                        "allowed_roles",
+                        "allowed_users",
+                        "current_user",
+                    }
+                )
+
+                # State-changing route.
+                state_changing_route = bool(
+                    route_methods.intersection(
+                        {
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                        }
+                    )
+                )
+
+                if (
+                    state_changing_route
+                    and privileged_operation
+                    and not has_access_control
+                ):
+
+                    findings.append({
+
+                        "vulnerability":
+                            "Improper Access Control",
+
+                        "cwe":
+                            "CWE-284",
+
+                        "line":
+                            node.lineno,
+
+                        "severity":
+                            "HIGH",
+
+                        "description":
+                            "A state-changing route performs a "
+                            "potentially privileged or sensitive "
+                            "operation without visible access-control "
+                            "enforcement.",
 
                         "filename":
                             filename,
