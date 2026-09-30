@@ -11,7 +11,8 @@ from security.repair_engine import (
     generate_repaired_code,
     validate_repair,
 )
-
+from security.cwe_client import CWEClient
+from security.owasp_mapper import OWASPMapper
 
 # ============================================================
 # FastAPI Application
@@ -86,21 +87,30 @@ def scan_code(
 # ============================================================
 # Finding Enrichment
 # ============================================================
-
 def enrich_findings(
     findings: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """
-    Add risk-engine metadata to scanner findings.
+    Enrich scanner findings with:
 
-    The original scanner finding is preserved, while additional
-    fields such as CWE, confidence, risk score and risk level
-    are exposed through the API.
+    - Risk-engine metadata
+    - Live MITRE CWE intelligence
+    - OWASP Top 10:2025 mapping
+
+    The original scanner finding is preserved.
     """
 
     enriched: List[Dict[str, Any]] = []
 
+    # Create clients once per request.
+    cwe_client = CWEClient(timeout=10)
+    owasp_mapper = OWASPMapper()
+
     for finding in findings:
+
+        # ----------------------------------------------------
+        # Risk information
+        # ----------------------------------------------------
 
         risk = calculate_risk_score(finding)
 
@@ -110,8 +120,45 @@ def enrich_findings(
         # CWE information
         # ----------------------------------------------------
 
-        item["cwe_id"] = risk["cwe_id"]
-        item["cwe_name"] = risk["cwe_name"]
+        cwe_id = risk.get("cwe_id")
+
+        item["cwe_id"] = cwe_id
+        item["cwe_name"] = risk.get("cwe_name")
+
+        # ----------------------------------------------------
+        # Live MITRE CWE intelligence
+        # ----------------------------------------------------
+
+        if cwe_id:
+
+            cwe_info = cwe_client.get_cwe(cwe_id)
+
+            item["cwe_intelligence"] = cwe_info
+
+        else:
+
+            item["cwe_intelligence"] = {
+                "status": "NO_CWE",
+                "source": "MITRE CWE",
+            }
+
+        # ----------------------------------------------------
+        # OWASP Top 10:2025 mapping
+        # ----------------------------------------------------
+
+        if cwe_id:
+
+            owasp_info = owasp_mapper.map_cwe(cwe_id)
+
+            item["owasp"] = owasp_info
+
+        else:
+
+            item["owasp"] = {
+                "status": "NO_CWE",
+                "source": "OWASP Top 10:2025",
+                "categories": [],
+            }
 
         # ----------------------------------------------------
         # Confidence
@@ -136,7 +183,6 @@ def enrich_findings(
         enriched.append(item)
 
     return enriched
-
 
 # ============================================================
 # Scan Response Builder
