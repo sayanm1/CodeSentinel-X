@@ -30,6 +30,7 @@ CWE_MAP = {
     "missing authorization": "CWE-862",
     "incorrect authorization": "CWE-863",
     "improper access control": "CWE-284",
+    "authorization bypass through user-controlled key": "CWE-639",
 
     # Batch 1 â€” Injection
     "cross-site scripting": "CWE-79",
@@ -1791,6 +1792,300 @@ def scan_ast(
                         "filename":
                             filename,
                     })
+
+        # ====================================================
+        # CWE-639 ? AUTHORIZATION BYPASS THROUGH USER-CONTROLLED KEY
+        # ====================================================
+
+        # Conservative Flask-focused heuristic:
+        #
+        # Detect state-changing routes that use a user-controlled
+        # resource identifier/key to access or modify a resource
+        # without visible resource-level authorization.
+        #
+        # This detector complements:
+        # CWE-862 - Missing Authorization
+        # CWE-863 - Incorrect Authorization
+        # CWE-284 - Improper Access Control
+        #
+        # This is a static-analysis heuristic and does not prove
+        # exploitability in every framework or application.
+
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+
+            route_methods = set()
+            has_route = False
+
+            # Detect Flask routes and HTTP methods.
+            for decorator in node.decorator_list:
+
+                if (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and decorator.func.attr == "route"
+                ):
+
+                    has_route = True
+
+                    for keyword in decorator.keywords:
+
+                        if keyword.arg == "methods":
+
+                            if isinstance(
+                                keyword.value,
+                                (ast.List, ast.Tuple, ast.Set),
+                            ):
+
+                                for method in keyword.value.elts:
+
+                                    if (
+                                        isinstance(
+                                            method,
+                                            ast.Constant,
+                                        )
+                                        and isinstance(
+                                            method.value,
+                                            str,
+                                        )
+                                    ):
+
+                                        route_methods.add(
+                                            method.value.upper()
+                                        )
+
+                    # Flask routes default to GET.
+                    if not route_methods:
+                        route_methods.add("GET")
+
+            if has_route:
+
+                state_changing_route = bool(
+                    route_methods.intersection(
+                        {
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                        }
+                    )
+                )
+
+                if state_changing_route:
+
+                    names = set()
+                    attributes = set()
+                    strings = set()
+
+                    for child in ast.walk(node):
+
+                        if isinstance(
+                            child,
+                            ast.Name,
+                        ):
+
+                            names.add(
+                                child.id.lower()
+                            )
+
+                        elif isinstance(
+                            child,
+                            ast.Attribute,
+                        ):
+
+                            attributes.add(
+                                child.attr.lower()
+                            )
+
+                        elif isinstance(
+                            child,
+                            ast.Constant,
+                        ):
+
+                            if isinstance(
+                                child.value,
+                                str,
+                            ):
+
+                                strings.add(
+                                    child.value.lower()
+                                )
+
+                    all_identifiers = (
+                        names
+                        | attributes
+                        | strings
+                    )
+
+                    # Explicit resource keys that are commonly
+                    # supplied or controlled by the requester.
+                    user_controlled_keys = {
+                        "user_id",
+                        "userid",
+                        "account_id",
+                        "accountid",
+                        "record_id",
+                        "recordid",
+                        "item_id",
+                        "itemid",
+                        "document_id",
+                        "documentid",
+                        "project_id",
+                        "projectid",
+                        "resource_id",
+                        "resourceid",
+                        "order_id",
+                        "orderid",
+                        "file_id",
+                        "fileid",
+                        "customer_id",
+                        "customerid",
+                        "profile_id",
+                        "profileid",
+                        "object_id",
+                        "objectid",
+                    }
+
+                    # Generic keys are handled only when a request
+                    # source is visible.
+                    generic_keys = {
+                        "id",
+                        "key",
+                    }
+
+                    request_sources = {
+                        "request",
+                        "args",
+                        "form",
+                        "json",
+                        "values",
+                        "query",
+                        "path",
+                        "params",
+                        "get_json",
+                    }
+
+                    resource_access_operations = {
+                        "get",
+                        "find",
+                        "find_by_id",
+                        "find_by_pk",
+                        "query",
+                        "filter",
+                        "filter_by",
+                        "where",
+                        "select",
+                        "update",
+                        "delete",
+                        "fetch",
+                        "load",
+                        "lookup",
+                        "retrieve",
+                    }
+
+                    authorization_markers = {
+                        "owner_id",
+                        "ownerid",
+                        "created_by",
+                        "createdby",
+                        "is_owner",
+                        "user_is_owner",
+                        "owns_resource",
+                        "owns_record",
+                        "owns_item",
+                        "owns_document",
+                        "owns_project",
+                        "can_edit",
+                        "can_delete",
+                        "can_update",
+                        "can_access",
+                        "has_permission",
+                        "check_permission",
+                        "permission_check",
+                        "authorize",
+                        "authorization",
+                        "access_allowed",
+                        "access_control",
+                        "allowed_users",
+                        "allowed_roles",
+                        "admin_required",
+                        "require_admin",
+                        "role_required",
+                        "require_role",
+                        "check_role",
+                    }
+
+                    has_explicit_user_key = bool(
+                        user_controlled_keys.intersection(
+                            all_identifiers
+                        )
+                    )
+
+                    has_generic_user_key = bool(
+                        generic_keys.intersection(
+                            all_identifiers
+                        )
+                    )
+
+                    has_request_source = bool(
+                        request_sources.intersection(
+                            all_identifiers
+                        )
+                    )
+
+                    has_resource_access = bool(
+                        resource_access_operations.intersection(
+                            all_identifiers
+                        )
+                    )
+
+                    has_resource_authorization = bool(
+                        authorization_markers.intersection(
+                            all_identifiers
+                        )
+                    )
+
+                    # A specific resource key is strong evidence.
+                    # Generic id/key requires visible request input.
+                    user_controlled_resource = (
+                        has_explicit_user_key
+                        or (
+                            has_generic_user_key
+                            and has_request_source
+                        )
+                    )
+
+                    if (
+                        user_controlled_resource
+                        and has_resource_access
+                        and not has_resource_authorization
+                    ):
+
+                        findings.append({
+
+                            "vulnerability":
+                                "Authorization Bypass Through User-Controlled Key",
+
+                            "cwe":
+                                "CWE-639",
+
+                            "line":
+                                node.lineno,
+
+                            "severity":
+                                "HIGH",
+
+                            "description":
+                                "A state-changing route uses a "
+                                "user-controlled resource key without "
+                                "visible ownership or resource-level "
+                                "authorization.",
+
+                            "filename":
+                                filename,
+                        })
 
         # ====================================================
         # ASSIGNMENT DETECTORS
