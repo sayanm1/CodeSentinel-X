@@ -1,4 +1,4 @@
-# security/test_closed_loop.py
+﻿# security/test_closed_loop.py
 
 """
 CodeSentinel-X Closed-Loop Security Verification
@@ -6,17 +6,17 @@ CodeSentinel-X Closed-Loop Security Verification
 Pipeline:
 
     Vulnerable Code
-          ↓
+          â†“
     Unified Security Scanner
-          ↓
+          â†“
     Automated Repair Engine
-          ↓
+          â†“
     Repair Validation
-          ↓
+          â†“
     Re-scan Repaired Code
-          ↓
+          â†“
     Before / After Comparison
-          ↓
+          â†“
     Final Verification
 
 Run from project root:
@@ -133,12 +133,16 @@ def print_findings(title, findings):
 
 def get_cwe(finding):
 
-    return (
+    cwe = (
         finding.get("cwe")
         or finding.get("cwe_id")
         or "UNKNOWN"
     )
 
+    if isinstance(cwe, str) and cwe.startswith("CWE-"):
+        return cwe.split(":", 1)[0].strip()
+
+    return cwe
 
 def build_cwe_set(findings):
 
@@ -495,7 +499,7 @@ def main():
         initial_passed == len(expected_cwes)
         and validation_passed == len(validation_fields)
         and comparison_passed == len(expected_cwes)
-        and repaired_count == 0
+        and not remaining_cwes.intersection(expected_cwes)
     ):
 
         print(

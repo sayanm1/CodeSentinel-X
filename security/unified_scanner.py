@@ -1,7 +1,8 @@
-# security/unified_scanner.py
-
 import ast
-import re
+import subprocess
+import tempfile
+import os
+import json
 
 
 # ============================================================
@@ -9,56 +10,52 @@ import re
 # ============================================================
 
 CWE_MAP = {
-    # Existing detectors
-    "command_injection": "CWE-78",
-    "command_execution": "CWE-78",
-    "subprocess": "CWE-78",
-    "subprocess_with_shell": "CWE-78",
-    "subprocess_popen_shell": "CWE-78",
 
-    "code_injection": "CWE-95",
+    # Existing detectors
+    "hardcoded password": "CWE-798",
+    "hardcoded secret": "CWE-798",
+    "hardcoded credential": "CWE-798",
+
+    "command injection": "CWE-78",
+    "command execution": "CWE-78",
+
+    "code injection": "CWE-95",
     "eval": "CWE-95",
     "exec": "CWE-95",
 
-    "unsafe_deserialization": "CWE-502",
-    "pickle": "CWE-502",
+    "unsafe deserialization": "CWE-502",
+    "insecure deserialization": "CWE-502",
 
-    "hardcoded_secret": "CWE-798",
-    "hardcoded_password": "CWE-798",
-
-    # Batch 1 — Injection
-    "cross_site_scripting": "CWE-79",
+    # Batch 1 â€” Injection
+    "cross-site scripting": "CWE-79",
     "xss": "CWE-79",
 
-    "sql_injection": "CWE-89",
-    "sql": "CWE-89",
+    "sql injection": "CWE-89",
 
-    "server_side_template_injection": "CWE-1336",
+    "server-side template injection": "CWE-1336",
     "ssti": "CWE-1336",
 
-    # Batch 2 — File & Network Security
+    # Batch 2 â€” File & Network Security
+    "path traversal": "CWE-22",
+    "directory traversal": "CWE-22",
     "path_traversal": "CWE-22",
-    "directory_traversal": "CWE-22",
     "path_traversal_attack": "CWE-22",
+
+    # CWE-434 â€” Unrestricted File Upload
+    "unrestricted file upload": "CWE-434",
+    "unrestricted upload": "CWE-434",
+    "unsafe file upload": "CWE-434",
+    "file upload": "CWE-434",
 }
 
 
-# ============================================================
-# CWE NAMES
-# ============================================================
-
 CWE_NAMES = {
-    "CWE-22":
-        "Improper Limitation of a Pathname to a Restricted Directory",
+
+    "CWE-798":
+        "Use of Hard-coded Credentials",
 
     "CWE-78":
         "Improper Neutralization of Special Elements used in an OS Command",
-
-    "CWE-79":
-        "Improper Neutralization of Input During Web Page Generation",
-
-    "CWE-89":
-        "Improper Neutralization of Special Elements used in an SQL Command",
 
     "CWE-95":
         "Improper Neutralization of Directives in Dynamically Evaluated Code",
@@ -66,11 +63,20 @@ CWE_NAMES = {
     "CWE-502":
         "Deserialization of Untrusted Data",
 
-    "CWE-798":
-        "Use of Hard-coded Credentials",
+    "CWE-79":
+        "Improper Neutralization of Input During Web Page Generation",
+
+    "CWE-89":
+        "Improper Neutralization of Special Elements used in an SQL Command",
 
     "CWE-1336":
         "Improper Neutralization of Special Elements Used in a Template Engine",
+
+    "CWE-22":
+        "Improper Limitation of a Pathname to a Restricted Directory",
+
+    "CWE-434":
+        "Unrestricted Upload of File with Dangerous Type",
 }
 
 
@@ -78,16 +84,53 @@ CWE_NAMES = {
 # VULNERABILITY NORMALIZATION
 # ============================================================
 
-def normalize_vulnerability(name):
+def normalize_vulnerability(value):
 
-    if not name:
-        return "Security Vulnerability"
+    if not value:
+        return "Unknown Vulnerability"
 
-    value = str(name).lower().strip()
+    value = str(value).lower()
 
-    # --------------------------------------------------------
-    # Batch 2 — Path Traversal
-    # --------------------------------------------------------
+    if (
+        "hardcoded password" in value
+        or "hardcoded secret" in value
+        or "hardcoded credential" in value
+    ):
+        return "Hardcoded Secret"
+
+    if (
+        "command injection" in value
+        or "command execution" in value
+    ):
+        return "Command Injection"
+
+    if (
+        "code injection" in value
+        or value == "eval"
+        or value == "exec"
+    ):
+        return "Code Injection"
+
+    if (
+        "unsafe deserialization" in value
+        or "insecure deserialization" in value
+    ):
+        return "Unsafe Deserialization"
+
+    if (
+        "cross-site scripting" in value
+        or value == "xss"
+    ):
+        return "Cross-Site Scripting"
+
+    if "sql injection" in value:
+        return "SQL Injection"
+
+    if (
+        "server-side template injection" in value
+        or value == "ssti"
+    ):
+        return "Server-Side Template Injection"
 
     if (
         "path traversal" in value
@@ -96,93 +139,76 @@ def normalize_vulnerability(name):
     ):
         return "Path Traversal"
 
-    # --------------------------------------------------------
-    # Batch 1 — XSS
-    # --------------------------------------------------------
-
     if (
-        "xss" in value
-        or "cross-site scripting" in value
-        or "cross site scripting" in value
+        "unrestricted file upload" in value
+        or "unrestricted upload" in value
+        or "unsafe file upload" in value
+        or "file upload" in value
     ):
-        return "Cross-Site Scripting"
+        return "Unrestricted File Upload"
 
-    # --------------------------------------------------------
-    # Batch 1 — SQL Injection
-    # --------------------------------------------------------
-
-    if (
-        "sql injection" in value
-        or "sql_injection" in value
-    ):
-        return "SQL Injection"
-
-    # --------------------------------------------------------
-    # Batch 1 — SSTI
-    # --------------------------------------------------------
-
-    if (
-        "ssti" in value
-        or "server-side template injection" in value
-        or "server side template injection" in value
-    ):
-        return "Server-Side Template Injection"
-
-    # --------------------------------------------------------
-    # Existing — Unsafe Deserialization
-    # --------------------------------------------------------
-
-    if "pickle" in value or "deserial" in value:
-        return "Unsafe Deserialization"
-
-    # --------------------------------------------------------
-    # Existing — Hardcoded Secret
-    # --------------------------------------------------------
-
-    if (
-        "hardcoded" in value
-        or "password" in value
-        or "secret" in value
-        or "credential" in value
-    ):
-        return "Hardcoded Secret"
-
-    # --------------------------------------------------------
-    # Existing — Code Injection
-    # --------------------------------------------------------
-
-    if (
-        "eval" in value
-        or "exec" in value
-        or "code injection" in value
-    ):
-        return "Code Injection"
-
-    # --------------------------------------------------------
-    # Existing — Command Injection
-    # --------------------------------------------------------
-
-    if (
-        "subprocess" in value
-        or "command injection" in value
-        or "command execution" in value
-    ):
-        return "Command Injection"
-
-    return str(name).replace("_", " ").title()
+    return value.title()
 
 
 # ============================================================
 # CWE INFERENCE
 # ============================================================
 
-def infer_cwe(vulnerability, message=""):
+def infer_cwe(
+    vulnerability,
+    description="",
+):
 
-    text = f"{vulnerability} {message}".lower()
+    vulnerability_text = str(
+        vulnerability or ""
+    ).lower()
+
+    description_text = str(
+        description or ""
+    ).lower()
 
     # --------------------------------------------------------
-    # Batch 2 — Path Traversal
+    # CWE-95 — Code Injection
+    # Only infer CWE-95 from explicit code-injection indicators.
+    # Do NOT infer it from generic subprocess warnings.
     # --------------------------------------------------------
+
+    if (
+        vulnerability_text in {"eval", "exec"}
+        or "code injection" in vulnerability_text
+    ):
+        return "CWE-95"
+
+    # --------------------------------------------------------
+    # CWE-78 — Command Injection
+    # --------------------------------------------------------
+
+    if (
+        "command injection" in vulnerability_text
+        or "command execution" in vulnerability_text
+    ):
+        return "CWE-78"
+
+    # --------------------------------------------------------
+    # Other CWE mappings
+    # --------------------------------------------------------
+
+    text = (
+        f"{vulnerability_text} {description_text}"
+    )
+
+    for keyword, cwe in CWE_MAP.items():
+
+        # CWE-95 keywords are handled explicitly above.
+        if keyword in {
+            "code injection",
+            "eval",
+            "exec",
+        }:
+            continue
+
+        if keyword in text:
+            return cwe
 
     if (
         "path traversal" in text
@@ -192,386 +218,129 @@ def infer_cwe(vulnerability, message=""):
     ):
         return "CWE-22"
 
-    # --------------------------------------------------------
-    # Batch 1 — XSS
-    # --------------------------------------------------------
-
     if (
-        "xss" in text
-        or "cross-site scripting" in text
-        or "cross site scripting" in text
-        or "web page generation" in text
+        "unrestricted file upload" in text
+        or "unrestricted upload" in text
+        or "unsafe file upload" in text
+        or "dangerous file type" in text
     ):
-        return "CWE-79"
-
-    # --------------------------------------------------------
-    # Batch 1 — SQL Injection
-    # --------------------------------------------------------
-
-    if (
-        "sql injection" in text
-        or (
-            "sql" in text
-            and "injection" in text
-        )
-    ):
-        return "CWE-89"
-
-    # --------------------------------------------------------
-    # Batch 1 — SSTI
-    # --------------------------------------------------------
-
-    if (
-        "ssti" in text
-        or "server-side template injection" in text
-        or "server side template injection" in text
-        or "template injection" in text
-    ):
-        return "CWE-1336"
-
-    # --------------------------------------------------------
-    # Existing — Unsafe Deserialization
-    # --------------------------------------------------------
-
-    if (
-        "pickle" in text
-        or "deserialize" in text
-        or "deserialization" in text
-    ):
-        return "CWE-502"
-
-    # --------------------------------------------------------
-    # Existing — Hardcoded Secret
-    # --------------------------------------------------------
-
-    if (
-        "hardcoded" in text
-        or "password" in text
-        or "api key" in text
-        or "secret" in text
-        or "credential" in text
-    ):
-        return "CWE-798"
-
-    # --------------------------------------------------------
-    # Existing — Code Injection
-    # --------------------------------------------------------
-
-    if (
-        "eval(" in text
-        or "exec(" in text
-        or "code injection" in text
-        or "dynamically evaluated" in text
-    ):
-        return "CWE-95"
-
-    # --------------------------------------------------------
-    # Existing — Command Injection
-    # --------------------------------------------------------
-
-    if (
-        "shell=true" in text
-        or "command injection" in text
-        or "command execution" in text
-        or "subprocess" in text
-        or "os.system" in text
-    ):
-        return "CWE-78"
+        return "CWE-434"
 
     return None
 
-
 # ============================================================
-# SEVERITY
+# SEVERITY NORMALIZATION
 # ============================================================
 
 def normalize_severity(
-    severity,
+    severity=None,
     vulnerability="",
-    message=""
+    description="",
 ):
 
     if severity:
 
         severity = str(
             severity
-        ).upper().strip()
-
-        if severity == "WARNING":
-            severity = "MEDIUM"
+        ).upper()
 
         if severity in {
-            "INFO",
-            "LOW",
-            "MEDIUM",
-            "HIGH",
             "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO",
         }:
             return severity
 
-    text = f"{vulnerability} {message}".lower()
+    text = (
+        f"{vulnerability} {description}"
+    ).lower()
 
-    # High-risk injection vulnerabilities
     if (
-        "shell=true" in text
-        or "eval(" in text
-        or "exec(" in text
+        "hardcoded" in text
+        or "command injection" in text
+        or "code injection" in text
+        or "unsafe deserialization" in text
         or "sql injection" in text
+        or "path traversal" in text
+        or "unrestricted file upload" in text
+        or "unrestricted upload" in text
+        or "unsafe file upload" in text
+    ):
+        return "HIGH"
+
+    if (
+        "xss" in text
         or "cross-site scripting" in text
-        or "xss" in text
-        or "template injection" in text
         or "ssti" in text
+        or "template injection" in text
     ):
-        return "HIGH"
+        return "MEDIUM"
 
-    # Path traversal
-    if (
-        "path traversal" in text
-        or "directory traversal" in text
-    ):
-        return "HIGH"
-
-    # Existing unsafe deserialization
-    if "pickle" in text:
-        return "HIGH"
-
-    # Existing hardcoded secrets
-    if (
-        "password" in text
-        or "secret" in text
-    ):
-        return "HIGH"
-
-    return "MEDIUM"
+    return "LOW"
 
 
 # ============================================================
-# FINDING NORMALIZATION
+# USER INPUT DETECTION
 # ============================================================
-
-def normalize_finding(finding):
-
-    if not isinstance(finding, dict):
-        return None
-
-    raw_vulnerability = (
-        finding.get("vulnerability")
-        or finding.get("type")
-        or finding.get("rule")
-        or finding.get("name")
-        or "Security Vulnerability"
-    )
-
-    message = (
-        finding.get("description")
-        or finding.get("message")
-        or finding.get("issue")
-        or ""
-    )
-
-    vulnerability = normalize_vulnerability(
-        raw_vulnerability
-    )
-
-    cwe = (
-        finding.get("cwe")
-        or finding.get("cwe_id")
-    )
-
-    if not cwe:
-        cwe = infer_cwe(
-            vulnerability,
-            message
-        )
-
-    # --------------------------------------------------------
-    # CWE NAME
-    # --------------------------------------------------------
-
-    cwe_name = CWE_NAMES.get(
-        cwe,
-        "Unknown"
-    )
-
-    severity = normalize_severity(
-        finding.get("severity"),
-        vulnerability,
-        message
-    )
-
-    line = (
-        finding.get("line")
-        or finding.get("line_number")
-        or finding.get("lineno")
-        or 0
-    )
-
-    normalized = dict(finding)
-
-    normalized.update({
-        "vulnerability": vulnerability,
-        "cwe": cwe,
-        "cwe_id": cwe,
-        "cwe_name": cwe_name,
-        "severity": severity,
-        "line": line,
-        "description": message,
-    })
-
-    return normalized
-
-
-# ============================================================
-# DUPLICATE REMOVAL
-# ============================================================
-
-def deduplicate_findings(findings):
-
-    unique = {}
-
-    severity_order = {
-        "INFO": 1,
-        "LOW": 2,
-        "MEDIUM": 3,
-        "HIGH": 4,
-        "CRITICAL": 5,
-    }
-
-    for finding in findings:
-
-        normalized = normalize_finding(
-            finding
-        )
-
-        if normalized is None:
-            continue
-
-        key = (
-            normalized.get("cwe"),
-            normalized.get("line"),
-            normalized.get("vulnerability"),
-        )
-
-        if key not in unique:
-
-            unique[key] = normalized
-
-        else:
-
-            old = unique[key]
-
-            old_score = severity_order.get(
-                old.get("severity"),
-                0
-            )
-
-            new_score = severity_order.get(
-                normalized.get("severity"),
-                0
-            )
-
-            if new_score > old_score:
-                unique[key] = normalized
-
-    return list(unique.values())
-
-
-# ============================================================
-# HELPER FUNCTIONS FOR BATCH 1 / BATCH 2
-# ============================================================
-
-def _get_source_segment(code, node):
-    """
-    Safely retrieve source text for an AST node.
-
-    This is used by injection detectors to inspect expressions
-    without executing the submitted code.
-    """
-
-    try:
-        return ast.get_source_segment(
-            code,
-            node
-        ) or ""
-    except Exception:
-        return ""
-
 
 def _contains_user_input(node):
-    """
-    Conservative AST check for expressions that appear to use
-    externally supplied input.
 
-    This is intentionally pattern-based.
-    It does not execute code.
-    """
+    if node is None:
+        return False
 
     for child in ast.walk(node):
 
-        # input(...)
-        if isinstance(child, ast.Call):
+        # Direct input()
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "input"
+        ):
+            return True
 
-            if (
-                isinstance(child.func, ast.Name)
-                and child.func.id == "input"
-            ):
-                return True
+        # request.files
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr == "files"
+        ):
+            return True
 
-            # request.args / request.form /
-            # request.values / request.data / etc.
-            if isinstance(child.func, ast.Attribute):
+        # request.form
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr == "form"
+        ):
+            return True
 
-                if isinstance(
-                    child.func.value,
-                    ast.Attribute
-                ):
+        # request.args
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr == "args"
+        ):
+            return True
 
-                    base = child.func.value
+        # request.data
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr == "data"
+        ):
+            return True
 
-                    if (
-                        isinstance(
-                            base.value,
-                            ast.Name
-                        )
-                        and base.value.id in {
-                            "request",
-                            "req",
-                        }
-                        and base.attr in {
-                            "args",
-                            "form",
-                            "values",
-                            "data",
-                            "json",
-                            "query_params",
-                        }
-                    ):
-                        return True
-
-                if (
-                    isinstance(
-                        child.func.value,
-                        ast.Name
-                    )
-                    and child.func.value.id in {
-                        "input",
-                        "request",
-                        "req",
-                    }
-                ):
-                    return True
-
-        # Variables commonly populated from input()
+        # Common user-controlled variable names
         if isinstance(child, ast.Name):
 
             if child.id.lower() in {
+
                 "user_input",
                 "userinput",
                 "input_data",
-                "query",
+                # "query" alone is not evidence of user-controlled input.
                 "query_string",
                 "user_query",
                 "request_data",
+
                 "filename",
                 "file_name",
                 "filepath",
@@ -579,173 +348,435 @@ def _contains_user_input(node):
                 "path",
                 "user_path",
                 "requested_path",
+
+                "upload",
+                "uploaded",
+                "uploaded_file",
+                "file",
             }:
                 return True
 
     return False
 
 
-def _expression_contains_string_formatting(node):
-    """
-    Detect string construction that combines a string literal with
-    another expression.
-
-    Used as a conservative signal for SQL/XSS/SSTI detection.
-    """
-
-    if isinstance(node, ast.JoinedStr):
-        return True
-
-    if isinstance(node, ast.BinOp):
-
-        if isinstance(
-            node.op,
-            (ast.Add, ast.Mod)
-        ):
-            return True
-
-    if isinstance(node, ast.Call):
-
-        if isinstance(
-            node.func,
-            ast.Attribute
-        ):
-
-            if node.func.attr in {
-                "format",
-                "format_map",
-            }:
-                return True
-
-    return False
-
-
-def _is_sql_string_expression(node, code):
-    """
-    Determine whether an expression looks like dynamically
-    constructed SQL.
-
-    Detection is deliberately conservative and focuses on
-    SQL keywords plus dynamic string construction.
-    """
-
-    source = _get_source_segment(
-        code,
-        node
-    ).lower()
-
-    sql_keywords = (
-        "select ",
-        "insert ",
-        "update ",
-        "delete ",
-        "drop ",
-        "alter ",
-        "create ",
-        "replace ",
-        "truncate ",
-        "union ",
-    )
-
-    has_sql_keyword = any(
-        keyword in source
-        for keyword in sql_keywords
-    )
-
-    dynamic = _expression_contains_string_formatting(
-        node
-    )
-
-    return has_sql_keyword and dynamic
-
-
 # ============================================================
-# MAIN SECURITY ANALYZER
+# AST SCANNER
 # ============================================================
 
-def analyze_security(
+def scan_ast(
     code,
-    filename="unknown.py"
+    filename="<string>",
 ):
 
     findings = []
 
-    # --------------------------------------------------------
-    # Validate source
-    # --------------------------------------------------------
-
-    if not isinstance(code, str):
-
-        return [{
-            "vulnerability": "Invalid Source",
-            "cwe": None,
-            "cwe_id": None,
-            "cwe_name": "Unknown",
-            "line": 0,
-            "severity": "INFO",
-            "description": "Source code must be a string.",
-            "filename": filename,
-        }]
-
-    # --------------------------------------------------------
-    # Parse AST
-    # --------------------------------------------------------
+    # Track variables whose values are derived from user-controlled input.
+    # This allows simple data-flow detection such as:
+    # user_input = input(...)
+    # query = "..." + user_input
+    # connection.execute(query)
+    tainted_variables = set()
 
     try:
 
-        tree = ast.parse(code)
+        tree = ast.parse(
+            code
+        )
 
-    except SyntaxError as error:
+    except SyntaxError:
 
-        return [{
-            "vulnerability": "Syntax Error",
-            "cwe": None,
-            "cwe_id": None,
-            "cwe_name": "Unknown",
-            "line": getattr(
-                error,
-                "lineno",
-                0
-            ),
-            "severity": "INFO",
-            "description": str(error),
-            "filename": filename,
-        }]
+        return findings
 
-    # --------------------------------------------------------
-    # AST traversal
-    # --------------------------------------------------------
+    # Pre-pass: collect simple variables derived from user input.
+    # This intentionally does not mark a variable such as `query` as
+    # tainted merely because of its name; its value must actually contain
+    # a recognized user-input source.
+    for statement in ast.walk(tree):
+
+        if isinstance(statement, ast.Assign):
+            if _contains_user_input(statement.value):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        tainted_variables.add(target.id)
+
+        elif isinstance(statement, ast.AnnAssign):
+            if (
+                statement.value is not None
+                and _contains_user_input(statement.value)
+                and isinstance(statement.target, ast.Name)
+            ):
+                tainted_variables.add(statement.target.id)
 
     for node in ast.walk(tree):
 
         # ====================================================
-        # FUNCTION CALLS
+        # CALL DETECTORS
         # ====================================================
 
-        if isinstance(node, ast.Call):
+        if isinstance(
+            node,
+            ast.Call,
+        ):
+
+            function_name = None
+
+            if isinstance(
+                node.func,
+                ast.Name,
+            ):
+
+                function_name = (
+                    node.func.id
+                )
+
+            elif isinstance(
+                node.func,
+                ast.Attribute,
+            ):
+
+                function_name = (
+                    node.func.attr
+                )
 
             # =================================================
-            # BATCH 2 — PATH TRAVERSAL
+            # CWE-798 â€” HARDCODED SECRET
             # =================================================
-
-            file_functions = {
-                "open",
-            }
 
             if (
                 isinstance(
                     node.func,
-                    ast.Name
+                    ast.Name,
                 )
-                and node.func.id in file_functions
+                and node.func.id in {
+                    "password",
+                    "secret",
+                }
             ):
 
                 if node.args:
 
-                    path_argument = node.args[0]
+                    findings.append({
 
-                    user_controlled = _contains_user_input(
-                        path_argument
+                        "vulnerability":
+                            "Hardcoded Secret",
+
+                        "cwe":
+                            "CWE-798",
+
+                        "line":
+                            node.lineno,
+
+                        "severity":
+                            "HIGH",
+
+                        "description":
+                            "Potential hardcoded credential.",
+
+                        "filename":
+                            filename,
+                    })
+
+            # =================================================
+            # CWE-78 â€” COMMAND INJECTION
+            # =================================================
+
+            if function_name in {
+
+                "system",
+                "popen",
+                "run",
+                "call",
+                "check_call",
+                "check_output",
+            }:
+
+                if node.args:
+
+                    argument = node.args[0]
+
+                    if _contains_user_input(
+                        argument
+                    ):
+
+                        findings.append({
+
+                            "vulnerability":
+                                "Command Injection",
+
+                            "cwe":
+                                "CWE-78",
+
+                            "line":
+                                node.lineno,
+
+                            "severity":
+                                "MEDIUM",
+
+                            "description":
+                                "User-controlled input reaches "
+                                "a command execution function.",
+
+                            "filename":
+                                filename,
+                        })
+
+            # =================================================
+            # CWE-95 â€” CODE INJECTION
+            # =================================================
+
+            if (
+                isinstance(
+                    node.func,
+                    ast.Name,
+                )
+                and node.func.id in {
+                    "eval",
+                    "exec",
+                }
+            ):
+
+                findings.append({
+
+                    "vulnerability":
+                        "Code Injection",
+
+                    "cwe":
+                        "CWE-95",
+
+                    "line":
+                        node.lineno,
+
+                    "severity":
+                        "HIGH",
+
+                    "description":
+                        "Dynamic execution of code may allow "
+                        "untrusted input to execute arbitrary code.",
+
+                    "filename":
+                        filename,
+                })
+
+            # =================================================
+            # CWE-502 â€” UNSAFE DESERIALIZATION
+            # =================================================
+
+            if (
+                isinstance(
+                    node.func,
+                    ast.Attribute,
+                )
+                and node.func.attr == "loads"
+                and isinstance(
+                    node.func.value,
+                    ast.Name,
+                )
+                and node.func.value.id == "pickle"
+            ):
+
+                findings.append({
+
+                    "vulnerability":
+                        "Unsafe Deserialization",
+
+                    "cwe":
+                        "CWE-502",
+
+                    "line":
+                        node.lineno,
+
+                    "severity":
+                        "HIGH",
+
+                    "description":
+                        "Deserialization using pickle may "
+                        "execute malicious objects from "
+                        "untrusted data.",
+
+                    "filename":
+                        filename,
+                })
+
+            # =================================================
+            # CWE-79 â€” CROSS-SITE SCRIPTING
+            # =================================================
+
+            if (
+                isinstance(
+                    node.func,
+                    ast.Attribute,
+                )
+                and node.func.attr in {
+                    "write",
+                    "render",
+                }
+            ):
+
+                if node.args:
+
+                    argument = node.args[0]
+
+                    if _contains_user_input(
+                        argument
+                    ):
+
+                        findings.append({
+
+                            "vulnerability":
+                                "Cross-Site Scripting",
+
+                            "cwe":
+                                "CWE-79",
+
+                            "line":
+                                node.lineno,
+
+                            "severity":
+                                "MEDIUM",
+
+                            "description":
+                                "User-controlled input may be "
+                                "written into generated web "
+                                "content without proper "
+                                "output encoding.",
+
+                            "filename":
+                                filename,
+                        })
+
+            # =================================================
+            # CWE-89 â€” SQL INJECTION
+            # =================================================
+
+            if (
+                isinstance(
+                    node.func,
+                    ast.Attribute,
+                )
+                and node.func.attr in {
+                    "execute",
+                    "executemany",
+                }
+            ):
+
+                if node.args:
+
+                    query_argument = (
+                        node.args[0]
+                    )
+
+                    query_is_user_controlled = (
+                        _contains_user_input(query_argument)
+                        or (
+                            isinstance(query_argument, ast.Name)
+                            and query_argument.id in tainted_variables
+                        )
+                    )
+
+                    if query_is_user_controlled:
+
+                        findings.append({
+
+                            "vulnerability":
+                                "SQL Injection",
+
+                            "cwe":
+                                "CWE-89",
+
+                            "line":
+                                node.lineno,
+
+                            "severity":
+                                "HIGH",
+
+                            "description":
+                                "User-controlled input may "
+                                "reach a SQL execution function "
+                                "without proper parameterization.",
+
+                            "filename":
+                                filename,
+                        })
+
+            # =================================================
+            # CWE-1336 — SSTI
+
+            if (
+                (
+                    isinstance(
+                        node.func,
+                        ast.Attribute,
+                    )
+                    and node.func.attr in {
+                        "render_template_string",
+                        "from_string",
+                    }
+                )
+                or
+                (
+                    isinstance(
+                        node.func,
+                        ast.Name,
+                    )
+                    and node.func.id == "Template"
+                )
+            ):
+
+                if node.args:
+
+                    template_argument = (
+                        node.args[0]
+                    )
+
+                    if _contains_user_input(
+                        template_argument
+                    ):
+
+                        findings.append({
+
+                            "vulnerability":
+                                "Server-Side Template Injection",
+
+                            "cwe":
+                                "CWE-1336",
+
+                            "line":
+                                node.lineno,
+
+                            "severity":
+                                "HIGH",
+
+                            "description":
+                                "User-controlled input may be "
+                                "interpreted as a server-side "
+                                "template.",
+
+                            "filename":
+                                filename,
+                        })
+
+            # =================================================
+            # CWE-22 â€” PATH TRAVERSAL
+            # =================================================
+
+            if (
+                isinstance(
+                    node.func,
+                    ast.Name,
+                )
+                and node.func.id == "open"
+            ):
+
+                if node.args:
+
+                    path_argument = (
+                        node.args[0]
+                    )
+
+                    user_controlled = (
+                        _contains_user_input(
+                            path_argument
+                        )
                     )
 
                     if user_controlled:
@@ -774,165 +805,48 @@ def analyze_security(
                                 filename,
                         })
 
-            # ------------------------------------------------
-            # EVAL
-            # ------------------------------------------------
+            # =================================================
+            # CWE-434 â€” UNRESTRICTED FILE UPLOAD
+            # =================================================
+
+            # Pattern 1:
+            #
+            # file.save(...)
+            #
+            # uploaded_file.save(...)
+            #
 
             if (
                 isinstance(
                     node.func,
-                    ast.Name
+                    ast.Attribute,
                 )
-                and node.func.id == "eval"
-            ):
-
-                findings.append({
-
-                    "vulnerability":
-                        "Code Injection",
-
-                    "cwe":
-                        "CWE-95",
-
-                    "line":
-                        node.lineno,
-
-                    "severity":
-                        "HIGH",
-
-                    "description":
-                        "Use of eval() can execute "
-                        "attacker-controlled Python code.",
-
-                    "filename":
-                        filename,
-                })
-
-            # ------------------------------------------------
-            # EXEC
-            # ------------------------------------------------
-
-            if (
-                isinstance(
-                    node.func,
-                    ast.Name
-                )
-                and node.func.id == "exec"
-            ):
-
-                findings.append({
-
-                    "vulnerability":
-                        "Code Injection",
-
-                    "cwe":
-                        "CWE-95",
-
-                    "line":
-                        node.lineno,
-
-                    "severity":
-                        "HIGH",
-
-                    "description":
-                        "Use of exec() can execute "
-                        "attacker-controlled Python code.",
-
-                    "filename":
-                        filename,
-                })
-
-            # ------------------------------------------------
-            # SUBPROCESS
-            # ------------------------------------------------
-
-            if (
-                isinstance(
-                    node.func,
-                    ast.Attribute
-                )
+                and node.func.attr == "save"
                 and isinstance(
                     node.func.value,
-                    ast.Name
+                    ast.Name,
                 )
-                and node.func.value.id == "subprocess"
             ):
 
-                function_name = node.func.attr
-
-                shell_true = False
-
-                for keyword in node.keywords:
-
-                    if keyword.arg == "shell":
-
-                        if (
-                            isinstance(
-                                keyword.value,
-                                ast.Constant
-                            )
-                            and keyword.value.value is True
-                        ):
-
-                            shell_true = True
-
-                # Only shell=True is treated as an actual
-                # Command Injection vulnerability.
-
-                if shell_true:
-
-                    findings.append({
-
-                        "vulnerability":
-                            "Command Injection",
-
-                        "cwe":
-                            "CWE-78",
-
-                        "line":
-                            node.lineno,
-
-                        "severity":
-                            "HIGH",
-
-                        "description":
-                            f"subprocess.{function_name}() "
-                            "uses shell=True. This may allow "
-                            "command injection when attacker-"
-                            "controlled input reaches the command.",
-
-                        "filename":
-                            filename,
-                    })
-
-            # ------------------------------------------------
-            # PICKLE
-            # ------------------------------------------------
-
-            if (
-                isinstance(
-                    node.func,
-                    ast.Attribute
+                upload_object = (
+                    node.func.value.id
                 )
-                and isinstance(
-                    node.func.value,
-                    ast.Name
-                )
-                and node.func.value.id == "pickle"
-            ):
 
-                if node.func.attr in {
-                    "load",
-                    "loads",
+                if upload_object in {
+
+                    "file",
+                    "uploaded_file",
+                    "upload",
+                    "uploaded",
                 }:
 
                     findings.append({
 
                         "vulnerability":
-                            "Unsafe Deserialization",
+                            "Unrestricted File Upload",
 
                         "cwe":
-                            "CWE-502",
+                            "CWE-434",
 
                         "line":
                             node.lineno,
@@ -941,47 +855,129 @@ def analyze_security(
                             "HIGH",
 
                         "description":
-                            "pickle can execute arbitrary "
-                            "code when loading untrusted data.",
+                            "Uploaded file is saved without "
+                            "visible validation of file type, "
+                            "extension, or content.",
 
                         "filename":
                             filename,
                     })
 
             # =================================================
-            # BATCH 1 — SQL INJECTION
+            # CWE-434 â€” FILE WRITE FROM UPLOAD
             # =================================================
 
-            sql_functions = {
-                "execute",
-                "executemany",
-                "executescript",
-            }
+            # Pattern 2:
+            #
+            # with open(upload_path, "wb") as file:
+            #     file.write(
+            #         request.files["file"].read()
+            #     )
+            #
+            # Detect the write() call when its data argument
+            # contains a request.files / uploaded-file source.
+            #
 
             if (
                 isinstance(
                     node.func,
-                    ast.Attribute
+                    ast.Attribute,
                 )
-                and node.func.attr in sql_functions
+                and node.func.attr == "write"
             ):
 
                 if node.args:
 
-                    query_argument = node.args[0]
+                    write_argument = (
+                        node.args[0]
+                    )
 
-                    if _is_sql_string_expression(
-                        query_argument,
-                        code
+                    upload_data = False
+
+                    for child in ast.walk(
+                        write_argument
                     ):
 
+                        # request.files[...]
+                        if (
+                            isinstance(
+                                child,
+                                ast.Subscript,
+                            )
+                            and isinstance(
+                                child.value,
+                                ast.Attribute,
+                            )
+                            and child.value.attr
+                            == "files"
+                        ):
+
+                            upload_data = True
+                            break
+
+                        # request.files[...].read()
+                        if (
+                            isinstance(
+                                child,
+                                ast.Call,
+                            )
+                            and isinstance(
+                                child.func,
+                                ast.Attribute,
+                            )
+                            and child.func.attr
+                            == "read"
+                        ):
+
+                            source = (
+                                child.func.value
+                            )
+
+                            if (
+                                isinstance(
+                                    source,
+                                    ast.Subscript,
+                                )
+                                and isinstance(
+                                    source.value,
+                                    ast.Attribute,
+                                )
+                                and source.value.attr
+                                == "files"
+                            ):
+
+                                upload_data = True
+                                break
+
+                        # Common uploaded-file variables
+                        if (
+                            isinstance(
+                                child,
+                                ast.Name,
+                            )
+                            and child.id.lower()
+                            in {
+                                "file",
+                                "uploaded_file",
+                                "upload",
+                                "uploaded",
+                                "file_data",
+                                "upload_data",
+                            }
+                        ):
+
+                            upload_data = True
+                            break
+
+                    if upload_data:
+
                         findings.append({
 
                             "vulnerability":
-                                "SQL Injection",
+                                "Unrestricted File Upload",
 
                             "cwe":
-                                "CWE-89",
+                                "CWE-434",
 
                             "line":
                                 node.lineno,
@@ -990,261 +986,60 @@ def analyze_security(
                                 "HIGH",
 
                             "description":
-                                "Dynamically constructed SQL "
-                                "query passed to database execution "
-                                "may allow SQL injection.",
-
-                            "filename":
-                                filename,
-                        })
-
-            # =================================================
-            # BATCH 1 — XSS
-            # =================================================
-
-            xss_functions = {
-                "write",
-                "writeln",
-                "render_template_string",
-            }
-
-            if (
-                isinstance(
-                    node.func,
-                    ast.Attribute
-                )
-                and node.func.attr in xss_functions
-            ):
-
-                if node.args:
-
-                    output_argument = node.args[0]
-
-                    dynamic = (
-                        _expression_contains_string_formatting(
-                            output_argument
-                        )
-                    )
-
-                    user_controlled = _contains_user_input(
-                        output_argument
-                    )
-
-                    if dynamic or user_controlled:
-
-                        findings.append({
-
-                            "vulnerability":
-                                "Cross-Site Scripting",
-
-                            "cwe":
-                                "CWE-79",
-
-                            "line":
-                                node.lineno,
-
-                            "severity":
-                                "HIGH",
-
-                            "description":
-                                "Potentially untrusted dynamic "
-                                "content is written to a web response "
-                                "without evidence of output encoding.",
-
-                            "filename":
-                                filename,
-                        })
-
-            # Flask-style render_template_string(...)
-            if (
-                isinstance(
-                    node.func,
-                    ast.Name
-                )
-                and node.func.id == "render_template_string"
-            ):
-
-                if node.args:
-
-                    template_argument = node.args[0]
-
-                    if (
-                        _expression_contains_string_formatting(
-                            template_argument
-                        )
-                        or _contains_user_input(
-                            template_argument
-                        )
-                    ):
-
-                        findings.append({
-
-                            "vulnerability":
-                                "Cross-Site Scripting",
-
-                            "cwe":
-                                "CWE-79",
-
-                            "line":
-                                node.lineno,
-
-                            "severity":
-                                "HIGH",
-
-                            "description":
-                                "Dynamic content is passed to "
-                                "render_template_string() and may "
-                                "allow cross-site scripting.",
-
-                            "filename":
-                                filename,
-                        })
-
-            # =================================================
-            # BATCH 1 — SERVER-SIDE TEMPLATE INJECTION
-            # =================================================
-
-            template_functions = {
-                "render_template_string",
-                "from_string",
-                "Template",
-            }
-
-            if (
-                isinstance(
-                    node.func,
-                    ast.Name
-                )
-                and node.func.id in template_functions
-            ):
-
-                if node.args:
-
-                    template_argument = node.args[0]
-
-                    dynamic = (
-                        _expression_contains_string_formatting(
-                            template_argument
-                        )
-                    )
-
-                    user_controlled = _contains_user_input(
-                        template_argument
-                    )
-
-                    if dynamic or user_controlled:
-
-                        findings.append({
-
-                            "vulnerability":
-                                "Server-Side Template Injection",
-
-                            "cwe":
-                                "CWE-1336",
-
-                            "line":
-                                node.lineno,
-
-                            "severity":
-                                "HIGH",
-
-                            "description":
-                                "Dynamically constructed template "
-                                "content may allow server-side template "
-                                "injection.",
-
-                            "filename":
-                                filename,
-                        })
-
-            # Jinja2 Environment.from_string(...)
-            if (
-                isinstance(
-                    node.func,
-                    ast.Attribute
-                )
-                and node.func.attr == "from_string"
-            ):
-
-                if node.args:
-
-                    template_argument = node.args[0]
-
-                    dynamic = (
-                        _expression_contains_string_formatting(
-                            template_argument
-                        )
-                    )
-
-                    user_controlled = _contains_user_input(
-                        template_argument
-                    )
-
-                    if dynamic or user_controlled:
-
-                        findings.append({
-
-                            "vulnerability":
-                                "Server-Side Template Injection",
-
-                            "cwe":
-                                "CWE-1336",
-
-                            "line":
-                                node.lineno,
-
-                            "severity":
-                                "HIGH",
-
-                            "description":
-                                "Dynamically constructed template "
-                                "passed to from_string() may allow "
-                                "server-side template injection.",
+                                "Uploaded file content is written "
+                                "to storage without visible "
+                                "validation of file type, "
+                                "extension, or content.",
 
                             "filename":
                                 filename,
                         })
 
         # ====================================================
-        # HARD-CODED PASSWORD / SECRET
+        # ASSIGNMENT DETECTORS
         # ====================================================
 
         if isinstance(
             node,
-            ast.Assign
+            ast.Assign,
         ):
+
+            # =================================================
+            # HARDCODED SECRET
+            # =================================================
 
             for target in node.targets:
 
                 if isinstance(
                     target,
-                    ast.Name
+                    ast.Name,
                 ):
 
-                    variable = target.id.lower()
-
-                    sensitive_names = [
-                        "password",
-                        "passwd",
-                        "secret",
-                        "api_key",
-                        "apikey",
-                        "token",
-                    ]
+                    variable = (
+                        target.id.lower()
+                    )
 
                     if any(
-                        word in variable
-                        for word in sensitive_names
+                        keyword in variable
+                        for keyword in {
+
+                            "password",
+                            "passwd",
+                            "secret",
+                            "api_key",
+                            "apikey",
+                            "token",
+                        }
                     ):
 
                         if isinstance(
                             node.value,
-                            ast.Constant
+                            ast.Constant,
                         ):
 
                             if isinstance(
                                 node.value.value,
-                                str
+                                str,
                             ):
 
                                 findings.append({
@@ -1262,212 +1057,489 @@ def analyze_security(
                                         "HIGH",
 
                                     "description":
-                                        "Possible hardcoded "
-                                        "sensitive value stored "
-                                        f"in '{target.id}'.",
+                                        "Sensitive credential is "
+                                        "hardcoded in source code.",
 
                                     "filename":
                                         filename,
                                 })
-
-        # ====================================================
-        # BATCH 1 — SQL STRING ASSIGNMENT
-        # ====================================================
-
-        if isinstance(
-            node,
-            ast.Assign
-        ):
-
-            if isinstance(
-                node.value,
-                (ast.BinOp, ast.JoinedStr)
-            ):
-
-                source = _get_source_segment(
-                    code,
-                    node.value
-                ).lower()
-
-                sql_keywords = (
-                    "select ",
-                    "insert ",
-                    "update ",
-                    "delete ",
-                    "drop ",
-                    "alter ",
-                    "create ",
-                    "union ",
-                )
-
-                if any(
-                    keyword in source
-                    for keyword in sql_keywords
-                ):
-
-                    for target in node.targets:
-
-                        if isinstance(
-                            target,
-                            ast.Name
-                        ):
-
-                            target_name = target.id.lower()
-
-                            if any(
-                                keyword in target_name
-                                for keyword in {
-                                    "sql",
-                                    "query",
-                                    "statement",
-                                }
-                            ):
-
-                                findings.append({
-
-                                    "vulnerability":
-                                        "SQL Injection",
-
-                                    "cwe":
-                                        "CWE-89",
-
-                                    "line":
-                                        node.lineno,
-
-                                    "severity":
-                                        "HIGH",
-
-                                    "description":
-                                        "SQL statement is dynamically "
-                                        "constructed using string "
-                                        "interpolation or concatenation.",
-
-                                    "filename":
-                                        filename,
-                                })
-
-    # --------------------------------------------------------
-    # Normalize and deduplicate
-    # --------------------------------------------------------
-
-    findings = deduplicate_findings(
-        findings
-    )
 
     return findings
 
 
 # ============================================================
-# ALIAS
+# BANDIT SCANNER
 # ============================================================
 
-def unified_scan(
+def scan_bandit(
     code,
-    filename="unknown.py"
+    filename="<string>",
 ):
 
-    return analyze_security(
-        code,
-        filename
-    )
+    findings = []
+
+    temp_path = None
+
+    try:
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".py",
+            delete=False,
+            encoding="utf-8",
+        ) as temp_file:
+
+            temp_file.write(
+                code
+            )
+
+            temp_path = (
+                temp_file.name
+            )
+
+        result = subprocess.run(
+
+            [
+                "bandit",
+                "-q",
+                "-f",
+                "json",
+                temp_path,
+            ],
+
+            capture_output=True,
+            text=True,
+
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        if not result.stdout:
+
+            return findings
+
+        try:
+
+            data = json.loads(
+                result.stdout
+            )
+
+        except json.JSONDecodeError:
+
+            return findings
+
+        for item in data.get(
+            "results",
+            [],
+        ):
+
+            findings.append({
+
+                "vulnerability":
+                    item.get(
+                        "test_name",
+                        "Bandit Finding",
+                    ),
+
+                "cwe":
+                    None,
+
+                "source":
+                    "bandit",
+
+                "line":
+                    item.get(
+                        "line_number"
+                    ),
+
+                "severity":
+                    item.get(
+                        "issue_severity",
+                        "LOW",
+                    ).upper(),
+
+                "description":
+                    item.get(
+                        "issue_text",
+                        "",
+                    ),
+
+                "filename":
+                    filename,
+            })
+
+    except Exception:
+
+        pass
+
+    finally:
+
+        if (
+            temp_path
+            and os.path.exists(
+                temp_path
+            )
+        ):
+
+            try:
+
+                os.remove(
+                    temp_path
+                )
+
+            except OSError:
+
+                pass
+
+    return findings
 
 
 # ============================================================
-# COMMAND-LINE TEST
+# SEMGREP SCANNER
+# ============================================================
+
+def scan_semgrep(
+    code,
+    filename="<string>",
+):
+
+    findings = []
+
+    temp_path = None
+
+    try:
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".py",
+            delete=False,
+            encoding="utf-8",
+        ) as temp_file:
+
+            temp_file.write(
+                code
+            )
+
+            temp_path = (
+                temp_file.name
+            )
+
+        result = subprocess.run(
+
+            [
+                "semgrep",
+                "--config",
+                "p/python",
+                "--json",
+                temp_path,
+            ],
+
+            capture_output=True,
+            text=True,
+
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        if not result.stdout:
+
+            return findings
+
+        try:
+
+            data = json.loads(
+                result.stdout
+            )
+
+        except json.JSONDecodeError:
+
+            return findings
+
+        for item in data.get(
+            "results",
+            [],
+        ):
+
+            extra = item.get(
+                "extra",
+                {}
+            )
+
+            metadata = extra.get(
+                "metadata",
+                {}
+            )
+
+            cwe_value = metadata.get(
+                "cwe"
+            )
+
+            if isinstance(
+                cwe_value,
+                list,
+            ):
+
+                cwe_value = (
+                    cwe_value[0]
+                    if cwe_value
+                    else None
+                )
+
+            findings.append({
+
+                "vulnerability":
+                    extra.get(
+                        "message",
+                        "Semgrep Finding",
+                    ),
+
+                "cwe":
+                    cwe_value,
+
+                "line":
+                    item.get(
+                        "start",
+                        {},
+                    ).get(
+                        "line"
+                    ),
+
+                "severity":
+                    extra.get(
+                        "severity",
+                        "WARNING",
+                    ).upper(),
+
+                "description":
+                    extra.get(
+                        "message",
+                        "",
+                    ),
+
+                "filename":
+                    filename,
+            })
+
+    except Exception:
+
+        pass
+
+    finally:
+
+        if (
+            temp_path
+            and os.path.exists(
+                temp_path
+            )
+        ):
+
+            try:
+
+                os.remove(
+                    temp_path
+                )
+
+            except OSError:
+
+                pass
+
+    return findings
+
+
+# ============================================================
+# FINDING NORMALIZER
+# ============================================================
+
+def normalize_finding(
+    finding,
+):
+
+    vulnerability = (
+        normalize_vulnerability(
+            finding.get(
+                "vulnerability",
+                "",
+            )
+        )
+    )
+
+    description = finding.get(
+        "description",
+        "",
+    )
+
+    cwe = finding.get(
+        "cwe"
+    )
+
+    if cwe is None and finding.get("source") != "bandit":
+        cwe = infer_cwe(
+        vulnerability,
+        description,
+    )
+
+    severity = normalize_severity(
+
+        finding.get(
+            "severity"
+        ),
+
+        vulnerability,
+
+        description,
+    )
+
+    return {
+
+        **finding,
+
+        "vulnerability":
+            vulnerability,
+
+        "cwe":
+            cwe,
+
+        "severity":
+            severity,
+
+        "description":
+            description,
+    }
+
+
+# ============================================================
+# UNIFIED SECURITY ANALYZER
+# ============================================================
+
+def analyze_security(
+    code,
+    filename="<string>",
+):
+
+    ast_findings = scan_ast(
+        code,
+        filename,
+    )
+
+    bandit_findings = scan_bandit(
+        code,
+        filename,
+    )
+
+    semgrep_findings = scan_semgrep(
+        code,
+        filename,
+    )
+
+    raw_findings = (
+        ast_findings
+        + bandit_findings
+        + semgrep_findings
+    )
+
+    normalized_findings = []
+
+    seen = set()
+
+    for finding in raw_findings:
+
+        normalized = (
+            normalize_finding(
+                finding
+            )
+        )
+
+        key = (
+
+            normalized.get(
+                "cwe"
+            ),
+
+            normalized.get(
+                "line"
+            ),
+
+            normalized.get(
+                "vulnerability"
+            ),
+        )
+
+        if key not in seen:
+
+            seen.add(
+                key
+            )
+
+            normalized_findings.append(
+                normalized
+            )
+
+    return normalized_findings
+
+
+# ============================================================
+# DIRECT TEST
 # ============================================================
 
 if __name__ == "__main__":
 
-    test_code = """
-import subprocess
+    sample_code = """
+
 import pickle
-import sqlite3
+import subprocess
 
 password = "admin123"
 
-user = input("Enter command: ")
+user_input = input(
+    "Enter command: "
+)
 
-subprocess.call(
-    user,
+subprocess.run(
+    user_input,
     shell=True
 )
 
-eval(user)
-
-pickle.loads(user)
-
-query = "SELECT * FROM users WHERE name = '" + user + "'"
-
-conn.execute(
-    query
+eval(
+    user_input
 )
 
-response.write(
-    "<html>" + user + "</html>"
+pickle.loads(
+    user_input
 )
 
-from jinja2 import Template
+with open(
+    user_input,
+    "r"
+) as file:
 
-template = Template(
-    "<h1>" + user + "</h1>"
-)
-
-with open(user, "r") as file:
     data = file.read()
+
+from flask import request
+
+@app.route(
+    "/upload",
+    methods=["POST"]
+)
+def upload():
+
+    file = request.files[
+        "file"
+    ]
+
+    file.save(
+        "/var/www/uploads/"
+        + file.filename
+    )
 """
 
     results = analyze_security(
-        test_code,
-        "test.py"
+        sample_code,
+        "sample.py",
     )
-
-    print("=" * 60)
-    print(
-        "       CodeSentinel-X Unified Security Scanner"
-    )
-    print("=" * 60)
 
     print(
-        f"\nTotal findings: {len(results)}"
+        json.dumps(
+            results,
+            indent=4,
+        )
     )
-
-    for index, finding in enumerate(
-        results,
-        start=1
-    ):
-
-        print("-" * 60)
-
-        print(
-            f"Finding #{index}"
-        )
-
-        print(
-            "Vulnerability:",
-            finding.get("vulnerability")
-        )
-
-        print(
-            "CWE:",
-            finding.get("cwe")
-        )
-
-        print(
-            "CWE Name:",
-            finding.get("cwe_name")
-        )
-
-        print(
-            "Severity:",
-            finding.get("severity")
-        )
-
-        print(
-            "Line:",
-            finding.get("line")
-        )
-
-        print(
-            "Description:",
-            finding.get("description")
-        )

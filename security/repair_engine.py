@@ -1,4 +1,4 @@
-"""
+﻿"""
 CodeSentinel-X Automated Repair Engine
 
 Provides deterministic repair strategies for supported
@@ -107,7 +107,7 @@ def _resolve_cwe(
                 value = str(value).upper()
 
                 if value.startswith("CWE-"):
-                    return value
+                    return value.split(":", 1)[0].strip()
 
                 if value.isdigit():
                     return f"CWE-{value}"
