@@ -32,6 +32,7 @@ CWE_MAP = {
     "improper access control": "CWE-284",
     "missing authentication for critical function": "CWE-306",
     "authorization bypass through user-controlled key": "CWE-639",
+    "server-side request forgery": "CWE-918",
 
     # Batch 1 â€” Injection
     "cross-site scripting": "CWE-79",
@@ -2319,6 +2320,334 @@ def scan_ast(
                             "filename":
                                 filename,
                         })
+
+        # ====================================================
+        # CWE-918 - SERVER-SIDE REQUEST FORGERY
+        # ====================================================
+
+        # Conservative Flask-focused heuristic:
+        #
+        # Detect a Flask route where a URL derived from request
+        # input reaches a known outbound HTTP client without
+        # visible URL/host validation.
+        #
+        # This detector intentionally avoids generic .get()
+        # calls and hardcoded URLs to reduce false positives.
+        #
+        # This is a static-analysis heuristic and does not prove
+        # exploitability in every framework or application.
+
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+
+            has_route = False
+
+            for decorator in node.decorator_list:
+
+                if (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(
+                        decorator.func,
+                        ast.Attribute,
+                    )
+                    and decorator.func.attr == "route"
+                ):
+                    has_route = True
+
+            if has_route:
+
+                url_variables = set()
+
+                for child in ast.walk(node):
+
+                    if isinstance(
+                        child,
+                        ast.Assign,
+                    ):
+
+                        if (
+                            isinstance(
+                                child.value,
+                                ast.Call,
+                            )
+                            and isinstance(
+                                child.value.func,
+                                ast.Attribute,
+                            )
+                            and child.value.func.attr == "get"
+                            and isinstance(
+                                child.value.func.value,
+                                ast.Attribute,
+                            )
+                            and child.value.func.value.attr in {
+                                "args",
+                                "form",
+                                "values",
+                            }
+                            and isinstance(
+                                child.value.func.value.value,
+                                ast.Name,
+                            )
+                            and child.value.func.value.value.id
+                            == "request"
+                        ):
+
+                            for target in child.targets:
+
+                                if isinstance(
+                                    target,
+                                    ast.Name,
+                                ):
+                                    url_variables.add(
+                                        target.id.lower()
+                                    )
+
+                    elif isinstance(
+                        child,
+                        ast.AnnAssign,
+                    ):
+
+                        if (
+                            isinstance(
+                                child.target,
+                                ast.Name,
+                            )
+                            and isinstance(
+                                child.value,
+                                ast.Call,
+                            )
+                            and isinstance(
+                                child.value.func,
+                                ast.Attribute,
+                            )
+                            and child.value.func.attr == "get"
+                            and isinstance(
+                                child.value.func.value,
+                                ast.Attribute,
+                            )
+                            and child.value.func.value.attr in {
+                                "args",
+                                "form",
+                                "values",
+                            }
+                            and isinstance(
+                                child.value.func.value.value,
+                                ast.Name,
+                            )
+                            and child.value.func.value.value.id
+                            == "request"
+                        ):
+
+                            url_variables.add(
+                                child.target.id.lower()
+                            )
+
+                authentication_and_validation_markers = {
+                    "is_safe_url",
+                    "safe_url",
+                    "validate_url",
+                    "valid_url",
+                    "validate_host",
+                    "allowed_host",
+                    "allowed_hosts",
+                    "allowlist",
+                    "allowlisted",
+                    "whitelist",
+                    "whitelisted",
+                    "trusted_host",
+                    "trusted_hosts",
+                    "permitted_host",
+                    "permitted_hosts",
+                    "block_private_ip",
+                    "private_ip_check",
+                    "ssrf_protection",
+                    "ssrf_safe",
+                }
+
+                has_url_validation = False
+
+                for child in ast.walk(node):
+
+                    if isinstance(
+                        child,
+                        ast.Name,
+                    ):
+                        if (
+                            child.id.lower()
+                            in authentication_and_validation_markers
+                        ):
+                            has_url_validation = True
+
+                    elif isinstance(
+                        child,
+                        ast.Attribute,
+                    ):
+                        if (
+                            child.attr.lower()
+                            in authentication_and_validation_markers
+                        ):
+                            has_url_validation = True
+
+                    elif isinstance(
+                        child,
+                        ast.Constant,
+                    ):
+                        if (
+                            isinstance(
+                                child.value,
+                                str,
+                            )
+                            and child.value.lower()
+                            in authentication_and_validation_markers
+                        ):
+                            has_url_validation = True
+
+                def is_user_controlled_url(argument):
+
+                    if _contains_user_input(argument):
+                        return True
+
+                    if (
+                        isinstance(
+                            argument,
+                            ast.Name,
+                        )
+                        and argument.id.lower()
+                        in url_variables
+                    ):
+                        return True
+
+                    return False
+
+                def is_outbound_http_call(call_node):
+
+                    if not isinstance(
+                        call_node,
+                        ast.Call,
+                    ):
+                        return False
+
+                    if not isinstance(
+                        call_node.func,
+                        ast.Attribute,
+                    ):
+                        return False
+
+                    method = call_node.func.attr.lower()
+
+                    if method not in {
+                        "get",
+                        "post",
+                        "put",
+                        "patch",
+                        "delete",
+                        "request",
+                        "urlopen",
+                    }:
+                        return False
+
+                    value = call_node.func.value
+
+                    if isinstance(
+                        value,
+                        ast.Name,
+                    ):
+                        return value.id.lower() in {
+                            "requests",
+                            "httpx",
+                        }
+
+                    if isinstance(
+                        value,
+                        ast.Attribute,
+                    ):
+                        return (
+                            method == "urlopen"
+                            and value.attr.lower()
+                            == "request"
+                            and isinstance(
+                                value.value,
+                                ast.Name,
+                            )
+                            and value.value.id.lower()
+                            == "urllib"
+                        )
+
+                    return False
+
+                if not has_url_validation:
+
+                    for child in ast.walk(node):
+
+                        if is_outbound_http_call(child):
+
+                            url_argument = None
+
+                            if child.args:
+
+                                # requests.request("GET", url)
+                                # uses the second positional argument
+                                # as the URL. Other HTTP helpers such
+                                # as requests.get(url) use the first.
+                                if (
+                                    isinstance(
+                                        child.func,
+                                        ast.Attribute,
+                                    )
+                                    and child.func.attr.lower()
+                                    == "request"
+                                    and len(child.args) >= 2
+                                ):
+                                    url_argument = child.args[1]
+                                else:
+                                    url_argument = child.args[0]
+
+                            if url_argument is None:
+
+                                for keyword in child.keywords:
+
+                                    if keyword.arg in {
+                                        "url",
+                                        "uri",
+                                    }:
+                                        url_argument = keyword.value
+                                        break
+
+                            if (
+                                url_argument is not None
+                                and is_user_controlled_url(
+                                    url_argument
+                                )
+                            ):
+
+                                findings.append({
+
+                                    "vulnerability":
+                                        "Server-Side Request Forgery",
+
+                                    "cwe":
+                                        "CWE-918",
+
+                                    "line":
+                                        child.lineno,
+
+                                    "severity":
+                                        "HIGH",
+
+                                    "description":
+                                        "User-controlled URL reaches "
+                                        "an outbound HTTP client without "
+                                        "visible URL or host validation, "
+                                        "which may allow server-side "
+                                        "request forgery.",
+
+                                    "filename":
+                                        filename,
+                                })
+
+                                break
 
         # ====================================================
         # ASSIGNMENT DETECTORS
