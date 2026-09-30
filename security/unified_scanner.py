@@ -30,6 +30,7 @@ CWE_MAP = {
     "missing authorization": "CWE-862",
     "incorrect authorization": "CWE-863",
     "improper access control": "CWE-284",
+    "missing authentication for critical function": "CWE-306",
     "authorization bypass through user-controlled key": "CWE-639",
 
     # Batch 1 â€” Injection
@@ -2082,6 +2083,238 @@ def scan_ast(
                                 "user-controlled resource key without "
                                 "visible ownership or resource-level "
                                 "authorization.",
+
+                            "filename":
+                                filename,
+                        })
+
+        # ====================================================
+        # CWE-306 - MISSING AUTHENTICATION FOR CRITICAL FUNCTION
+        # ====================================================
+
+        # Conservative Flask-focused heuristic:
+        #
+        # Detect state-changing routes that perform potentially
+        # critical or sensitive operations without visible
+        # authentication enforcement.
+        #
+        # This detector focuses on missing authentication and is
+        # intentionally separate from authorization weaknesses such
+        # as CWE-862, CWE-863, CWE-284, and CWE-639.
+        #
+        # This is a static-analysis heuristic and does not prove
+        # exploitability in every framework or application.
+
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+
+            route_methods = set()
+            has_route = False
+
+            for decorator in node.decorator_list:
+
+                if (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and decorator.func.attr == "route"
+                ):
+
+                    has_route = True
+
+                    for keyword in decorator.keywords:
+
+                        if keyword.arg == "methods":
+
+                            if isinstance(
+                                keyword.value,
+                                (ast.List, ast.Tuple, ast.Set),
+                            ):
+
+                                for method in keyword.value.elts:
+
+                                    if (
+                                        isinstance(
+                                            method,
+                                            ast.Constant,
+                                        )
+                                        and isinstance(
+                                            method.value,
+                                            str,
+                                        )
+                                    ):
+
+                                        route_methods.add(
+                                            method.value.upper()
+                                        )
+
+                    if not route_methods:
+                        route_methods.add("GET")
+
+            if has_route:
+
+                state_changing_route = bool(
+                    route_methods.intersection(
+                        {
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                        }
+                    )
+                )
+
+                if state_changing_route:
+
+                    names = set()
+                    attributes = set()
+                    strings = set()
+
+                    # Include the route handler's own function name.
+                    # ast.walk(node) does not expose FunctionDef.name
+                    # as an ast.Name node.
+                    names.add(node.name.lower())
+
+                    for child in ast.walk(node):
+
+                        if isinstance(
+                            child,
+                            ast.Name,
+                        ):
+
+                            names.add(
+                                child.id.lower()
+                            )
+
+                        elif isinstance(
+                            child,
+                            ast.Attribute,
+                        ):
+
+                            attributes.add(
+                                child.attr.lower()
+                            )
+
+                        elif isinstance(
+                            child,
+                            ast.Constant,
+                        ):
+
+                            if isinstance(
+                                child.value,
+                                str,
+                            ):
+
+                                strings.add(
+                                    child.value.lower()
+                                )
+
+                    all_identifiers = (
+                        names
+                        | attributes
+                        | strings
+                    )
+
+                    critical_operations = {
+                        "admin",
+                        "administrator",
+                        "manage_users",
+                        "manageusers",
+                        "delete_user",
+                        "deleteuser",
+                        "create_user",
+                        "createuser",
+                        "update_user",
+                        "updateuser",
+                        "update_role",
+                        "updaterole",
+                        "grant",
+                        "revoke",
+                        "permission",
+                        "permissions",
+                        "role",
+                        "roles",
+                        "privilege",
+                        "privileges",
+                        "password",
+                        "reset_password",
+                        "resetpassword",
+                        "change_password",
+                        "changepassword",
+                        "delete_account",
+                        "deleteaccount",
+                        "transfer",
+                        "payment",
+                        "payments",
+                        "transaction",
+                        "transactions",
+                        "settings",
+                        "configuration",
+                        "config",
+                    }
+
+                    authentication_markers = {
+                        "login_required",
+                        "loginrequired",
+                        "jwt_required",
+                        "jwtrequired",
+                        "auth_required",
+                        "authrequired",
+                        "authenticated",
+                        "is_authenticated",
+                        "isauthenticated",
+                        "current_user",
+                        "currentuser",
+                        "verify_token",
+                        "verifytoken",
+                        "validate_token",
+                        "validatetoken",
+                        "require_auth",
+                        "requireauth",
+                        "require_login",
+                        "requirelogin",
+                        "session_user",
+                        "sessionuser",
+                        "user_session",
+                        "usersession",
+                    }
+
+                    has_critical_operation = bool(
+                        critical_operations.intersection(
+                            all_identifiers
+                        )
+                    )
+
+                    has_authentication = bool(
+                        authentication_markers.intersection(
+                            all_identifiers
+                        )
+                    )
+
+                    if (
+                        has_critical_operation
+                        and not has_authentication
+                    ):
+
+                        findings.append({
+
+                            "vulnerability":
+                                "Missing Authentication for Critical Function",
+
+                            "cwe":
+                                "CWE-306",
+
+                            "line":
+                                node.lineno,
+
+                            "severity":
+                                "HIGH",
+
+                            "description":
+                                "A state-changing route performs a "
+                                "potentially critical function without "
+                                "visible authentication enforcement.",
 
                             "filename":
                                 filename,
