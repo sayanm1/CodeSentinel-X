@@ -28,6 +28,7 @@ CWE_MAP = {
 
     # CWE-862 — Missing Authorization
     "missing authorization": "CWE-862",
+    "incorrect authorization": "CWE-863",
 
     # Batch 1 â€” Injection
     "cross-site scripting": "CWE-79",
@@ -1367,6 +1368,226 @@ def scan_ast(
                         "filename":
                             filename,
                     })
+        # ====================================================
+        # CWE-863 ? INCORRECT AUTHORIZATION
+        # ====================================================
+
+        # Conservative Flask-focused heuristic:
+        #
+        # Detect authenticated state-changing routes that operate
+        # on user-controlled resource identifiers but do not show
+        # visible resource-level ownership or permission checks.
+        #
+        # CWE-862 is intentionally excluded here because an
+        # authentication mechanism must be visibly present.
+        #
+        # This is a static-analysis heuristic and does not claim
+        # to prove an authorization vulnerability in every
+        # framework or application.
+
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+
+            route_methods = set()
+            has_route = False
+
+            # Detect Flask routes and their HTTP methods.
+            for decorator in node.decorator_list:
+
+                if (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and decorator.func.attr == "route"
+                ):
+
+                    has_route = True
+
+                    for keyword in decorator.keywords:
+
+                        if keyword.arg == "methods":
+
+                            if isinstance(
+                                keyword.value,
+                                (ast.List, ast.Tuple, ast.Set),
+                            ):
+
+                                for method in keyword.value.elts:
+
+                                    if (
+                                        isinstance(
+                                            method,
+                                            ast.Constant,
+                                        )
+                                        and isinstance(
+                                            method.value,
+                                            str,
+                                        )
+                                    ):
+
+                                        route_methods.add(
+                                            method.value.upper()
+                                        )
+
+                    # Flask routes default to GET.
+                    if not route_methods:
+                        route_methods.add("GET")
+
+            if has_route:
+
+                function_text = ""
+
+                # Collect names, attributes and string constants
+                # from the complete function.
+                for child in ast.walk(node):
+
+                    if isinstance(
+                        child,
+                        ast.Name,
+                    ):
+
+                        function_text += (
+                            " " + child.id.lower()
+                        )
+
+                    elif isinstance(
+                        child,
+                        ast.Attribute,
+                    ):
+
+                        function_text += (
+                            " " + child.attr.lower()
+                        )
+
+                    elif isinstance(
+                        child,
+                        ast.Constant,
+                    ):
+
+                        if isinstance(
+                            child.value,
+                            str,
+                        ):
+
+                            function_text += (
+                                " " + child.value.lower()
+                            )
+
+                # Potentially sensitive operation.
+                sensitive_operation = any(
+                    marker in function_text
+                    for marker in {
+                        "delete",
+                        "update",
+                        "edit",
+                        "modify",
+                        "transfer",
+                        "admin",
+                        "account",
+                        "profile",
+                        "permission",
+                        "role",
+                    }
+                )
+
+                # User-controlled resource identifier.
+                has_resource_identifier = any(
+                    marker in function_text
+                    for marker in {
+                        "user_id",
+                        "userid",
+                        "account_id",
+                        "accountid",
+                        "record_id",
+                        "recordid",
+                        "resource_id",
+                        "resourceid",
+                        "object_id",
+                        "objectid",
+                    }
+                )
+
+                # Authentication is present.
+                has_authentication = any(
+                    marker in function_text
+                    for marker in {
+                        "login_required",
+                        "jwt_required",
+                        "authenticated",
+                        "is_authenticated",
+                        "current_user",
+                    }
+                )
+
+                # Visible resource-level authorization.
+                has_resource_authorization = any(
+                    marker in function_text
+                    for marker in {
+                        "owner_id",
+                        "ownerid",
+                        "is_owner",
+                        "owns_resource",
+                        "owns_account",
+                        "owns_user",
+                        "can_edit",
+                        "can_delete",
+                        "can_modify",
+                        "can_update",
+                        "has_permission",
+                        "check_permission",
+                        "authorize",
+                        "access_allowed",
+                        "allowed_users",
+                        "allowed_roles",
+                        "permission_check",
+                    }
+                )
+
+                # State-changing route.
+                state_changing_route = bool(
+                    route_methods.intersection(
+                        {
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                        }
+                    )
+                )
+
+                if (
+                    state_changing_route
+                    and sensitive_operation
+                    and has_resource_identifier
+                    and has_authentication
+                    and not has_resource_authorization
+                ):
+
+                    findings.append({
+
+                        "vulnerability":
+                            "Incorrect Authorization",
+
+                        "cwe":
+                            "CWE-863",
+
+                        "line":
+                            node.lineno,
+
+                        "severity":
+                            "HIGH",
+
+                        "description":
+                            "An authenticated state-changing route "
+                            "operates on a user-controlled "
+                            "resource without visible resource-level "
+                            "ownership or authorization enforcement.",
+
+                        "filename":
+                            filename,
+                    })
+
         # ====================================================
         # ASSIGNMENT DETECTORS
         # ====================================================
