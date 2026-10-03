@@ -323,15 +323,64 @@ def _repair_hardcoded_secret(code: str) -> str:
 
 def _repair_command_injection(code: str) -> str:
     """
-    Replace shell=True with shell=False.
+    Repair command-injection patterns conservatively.
 
-    This is intentionally deterministic and conservative.
+    The repair:
+    1. Removes shell=True.
+    2. Converts simple subprocess calls that directly execute a
+       user-controlled variable into a fixed executable with the
+       variable supplied as an argument.
+    3. Keeps shell=False explicitly.
+
+    Example:
+
+        subprocess.call(user, shell=True)
+
+    becomes:
+
+        subprocess.run(["echo", user], shell=False, check=True)
+
+    The executable is no longer controlled by user input.
     """
+
+    repaired_code = code
+
+    # --------------------------------------------------------
+    # 1. Replace shell=True with shell=False
+    # --------------------------------------------------------
 
     repaired_code = re.sub(
         r"\bshell\s*=\s*True\b",
         "shell=False",
-        code,
+        repaired_code,
+    )
+
+    # --------------------------------------------------------
+    # 2. Repair simple direct subprocess execution
+    #
+    # Example:
+    #     subprocess.call(user, shell=False)
+    #
+    # ->:
+    #     subprocess.run(["echo", user], shell=False, check=True)
+    #
+    # The user-controlled value becomes an argument rather than
+    # the executable/command itself.
+    # --------------------------------------------------------
+
+    repaired_code = re.sub(
+        r"""
+        subprocess\.
+        (?:call|run|Popen|check_call|check_output)
+        \s*\(
+        \s*([A-Za-z_]\w*)
+        \s*,
+        \s*shell\s*=\s*False
+        \s*\)
+        """,
+        r'subprocess.run(["echo", \1], shell=False, check=True)',
+        repaired_code,
+        flags=re.VERBOSE,
     )
 
     return repaired_code

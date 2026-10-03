@@ -1,8 +1,9 @@
-import ast
+﻿import ast
 import subprocess
 import tempfile
 import os
 import json
+import re
 
 
 # ============================================================
@@ -10,242 +11,142 @@ import json
 # ============================================================
 
 CWE_MAP = {
-
-    # Existing detectors
-    "hardcoded password": "CWE-798",
-    "hardcoded secret": "CWE-798",
-    "hardcoded credential": "CWE-798",
-
-    "command injection": "CWE-78",
-    "command execution": "CWE-78",
-
-    "code injection": "CWE-95",
-    "eval": "CWE-95",
-    "exec": "CWE-95",
-
-    "unsafe deserialization": "CWE-502",
-    "insecure deserialization": "CWE-502",
-
-    # CWE-862 — Missing Authorization
-    "missing authorization": "CWE-862",
-    "incorrect authorization": "CWE-863",
-    "improper access control": "CWE-284",
-    "missing authentication for critical function": "CWE-306",
+    "hardcoded password": "CWE-798", "hardcoded secret": "CWE-798",
+    "hardcoded credential": "CWE-798", "hardcoded_password_string": "CWE-798",
+    "command injection": "CWE-78", "command execution": "CWE-78", "shell=true": "CWE-78",
+    "code injection": "CWE-95", "eval": "CWE-95", "exec": "CWE-95",
+    "unsafe deserialization": "CWE-502", "insecure deserialization": "CWE-502", "pickle": "CWE-502",
+    "missing authorization": "CWE-862", "incorrect authorization": "CWE-863",
+    "improper access control": "CWE-284", "missing authentication for critical function": "CWE-306",
+    "missing authentication": "CWE-306", "improper authentication": "CWE-287",
     "authorization bypass through user-controlled key": "CWE-639",
-    "server-side request forgery": "CWE-918",
-
-    # Batch 1 â€” Injection
-    "cross-site scripting": "CWE-79",
-    "xss": "CWE-79",
-
-    "sql injection": "CWE-89",
-
-    "server-side template injection": "CWE-1336",
-    "ssti": "CWE-1336",
-
-    # Batch 2 â€” File & Network Security
-    "path traversal": "CWE-22",
-    "directory traversal": "CWE-22",
-    "path_traversal": "CWE-22",
-    "path_traversal_attack": "CWE-22",
-
-    # CWE-434 â€” Unrestricted File Upload
-    "unrestricted file upload": "CWE-434",
-    "unrestricted upload": "CWE-434",
-    "unsafe file upload": "CWE-434",
-    "file upload": "CWE-434",
-
-    # CWE-352 ? Cross-Site Request Forgery
-    "cross-site request forgery": "CWE-352",
-    "csrf": "CWE-352",
+    "server-side request forgery": "CWE-918", "ssrf": "CWE-918",
+    "cross-site scripting": "CWE-79", "xss": "CWE-79", "sql injection": "CWE-89",
+    "server-side template injection": "CWE-1336", "ssti": "CWE-1336",
+    "path traversal": "CWE-22", "directory traversal": "CWE-22", "path_traversal": "CWE-22",
+    "unrestricted file upload": "CWE-434", "unrestricted upload": "CWE-434",
+    "unsafe file upload": "CWE-434", "file upload": "CWE-434",
+    "cross-site request forgery": "CWE-352", "csrf": "CWE-352",
+    "open redirect": "CWE-601", "xxe": "CWE-611", "xml external entity": "CWE-611",
+    "risky cryptography": "CWE-327", "weak cryptography": "CWE-327",
+    "weak password hashing": "CWE-916", "cleartext sensitive data": "CWE-312",
+    "cleartext transmission": "CWE-319", "sensitive information in logs": "CWE-532",
+    "log injection": "CWE-117", "insufficient logging": "CWE-778",
+    "inadequate encryption strength": "CWE-326",
 }
-
 
 CWE_NAMES = {
+    "CWE-798": "Use of Hard-coded Credentials", "CWE-78": "OS Command Injection",
+    "CWE-95": "Code Injection", "CWE-502": "Deserialization of Untrusted Data",
+    "CWE-79": "Cross-Site Scripting", "CWE-89": "SQL Injection",
+    "CWE-1336": "Server-Side Template Injection", "CWE-22": "Path Traversal",
+    "CWE-434": "Unrestricted File Upload", "CWE-352": "Cross-Site Request Forgery",
+    "CWE-601": "Open Redirect", "CWE-611": "XML External Entity (XXE)",
+    "CWE-327": "Risky Cryptography", "CWE-916": "Weak Password Hashing",
+    "CWE-312": "Cleartext Sensitive Data", "CWE-319": "Cleartext Transmission",
+    "CWE-532": "Sensitive Information in Logs", "CWE-117": "Log Injection",
+    "CWE-778": "Insufficient Logging", "CWE-287": "Improper Authentication",
+    "CWE-306": "Missing Authentication for Critical Function", "CWE-862": "Missing Authorization",
+    "CWE-863": "Incorrect Authorization", "CWE-284": "Improper Access Control",
+    "CWE-639": "Authorization Bypass Through User-Controlled Key",
+    "CWE-918": "Server-Side Request Forgery", "CWE-326": "Inadequate Encryption Strength",
+}
 
-    "CWE-798":
-        "Use of Hard-coded Credentials",
-
-    "CWE-78":
-        "Improper Neutralization of Special Elements used in an OS Command",
-
-    "CWE-95":
-        "Improper Neutralization of Directives in Dynamically Evaluated Code",
-
-    "CWE-502":
-        "Deserialization of Untrusted Data",
-
-    "CWE-79":
-        "Improper Neutralization of Input During Web Page Generation",
-
-    "CWE-89":
-        "Improper Neutralization of Special Elements used in an SQL Command",
-
-    "CWE-1336":
-        "Improper Neutralization of Special Elements Used in a Template Engine",
-
-    "CWE-22":
-        "Improper Limitation of a Pathname to a Restricted Directory",
-
-    "CWE-434":
-        "Unrestricted Upload of File with Dangerous Type",
-
-    "CWE-352":
-        "Cross-Site Request Forgery",
+BANDIT_IMPORT_ADVISORIES = {"B403", "B404"}
+BANDIT_CWE_MAP = {
+    "B105": "CWE-798", "B106": "CWE-798", "B107": "CWE-798",
+    "B307": "CWE-95", "B301": "CWE-502", "B506": "CWE-502",
+    "B602": "CWE-78", "B324": "CWE-327",
 }
 
 
-# ============================================================
-# VULNERABILITY NORMALIZATION
-# ============================================================
-
-def normalize_vulnerability(value):
-
+def _extract_cwe_id(value):
+    import re
     if not value:
-        return "Unknown Vulnerability"
-
-    value = str(value).lower()
-
-    if (
-        "hardcoded password" in value
-        or "hardcoded secret" in value
-        or "hardcoded credential" in value
-    ):
-        return "Hardcoded Secret"
-
-    if (
-        "command injection" in value
-        or "command execution" in value
-    ):
-        return "Command Injection"
-
-    if (
-        "code injection" in value
-        or value == "eval"
-        or value == "exec"
-    ):
-        return "Code Injection"
-
-    if (
-        "unsafe deserialization" in value
-        or "insecure deserialization" in value
-    ):
-        return "Unsafe Deserialization"
-
-    if (
-        "cross-site scripting" in value
-        or value == "xss"
-    ):
-        return "Cross-Site Scripting"
-
-    if "sql injection" in value:
-        return "SQL Injection"
-
-    if (
-        "server-side template injection" in value
-        or value == "ssti"
-    ):
-        return "Server-Side Template Injection"
-
-    if (
-        "path traversal" in value
-        or "directory traversal" in value
-        or "path_traversal" in value
-    ):
-        return "Path Traversal"
-
-    if (
-        "unrestricted file upload" in value
-        or "unrestricted upload" in value
-        or "unsafe file upload" in value
-        or "file upload" in value
-    ):
-        return "Unrestricted File Upload"
-
-    if (
-        "cross-site request forgery" in value
-        or value == "csrf"
-    ):
-        return "Cross-Site Request Forgery"
-
-    return value.title()
+        return None
+    match = re.search(r"\bCWE[-_ ]?(\d+)\b", str(value), re.IGNORECASE)
+    return f"CWE-{match.group(1)}" if match else None
 
 
-# ============================================================
-# CWE INFERENCE
-# ============================================================
+def normalize_vulnerability(value, description="", cwe=None, source=None, test_id=None):
+    raw = str(value or "").strip()
+    text = f"{raw} {description or ''}".lower()
+    canonical_cwe = _extract_cwe_id(cwe)
 
-def infer_cwe(
-    vulnerability,
-    description="",
-):
+    if canonical_cwe in CWE_NAMES:
+        return {
+            "CWE-798": "Hardcoded Secret", "CWE-78": "Command Injection", "CWE-95": "Code Injection",
+            "CWE-502": "Unsafe Deserialization", "CWE-79": "Cross-Site Scripting", "CWE-89": "SQL Injection",
+            "CWE-1336": "Server-Side Template Injection", "CWE-22": "Path Traversal", "CWE-434": "Unrestricted File Upload",
+            "CWE-352": "Cross-Site Request Forgery", "CWE-601": "Open Redirect", "CWE-611": "XML External Entity (XXE)",
+            "CWE-918": "Server-Side Request Forgery", "CWE-327": "Risky Cryptography", "CWE-916": "Weak Password Hashing",
+            "CWE-312": "Cleartext Sensitive Data", "CWE-319": "Cleartext Transmission", "CWE-532": "Sensitive Information in Logs",
+            "CWE-117": "Log Injection", "CWE-778": "Insufficient Logging", "CWE-287": "Improper Authentication",
+            "CWE-306": "Missing Authentication for Critical Function", "CWE-862": "Missing Authorization",
+            "CWE-863": "Incorrect Authorization", "CWE-284": "Improper Access Control",
+            "CWE-639": "Authorization Bypass Through User-Controlled Key", "CWE-326": "Inadequate Encryption Strength",
+        }[canonical_cwe]
 
-    vulnerability_text = str(
-        vulnerability or ""
-    ).lower()
+    if source == "bandit" and test_id in BANDIT_CWE_MAP:
+        return normalize_vulnerability("", cwe=BANDIT_CWE_MAP[test_id])
+    if "hardcoded" in text and any(k in text for k in ("password", "secret", "credential", "api key", "token")): return "Hardcoded Secret"
+    if "shell=true" in text or "command injection" in text: return "Command Injection"
+    if "eval(" in text or "exec(" in text or "code injection" in text: return "Code Injection"
+    if "pickle" in text or "deserialization" in text or "yaml.load" in text: return "Unsafe Deserialization"
+    if "cross-site scripting" in text or "xss" in text or "web page generation" in text: return "Cross-Site Scripting"
+    if "sql injection" in text or "sql command" in text: return "SQL Injection"
+    if "template injection" in text or "ssti" in text or "template engine" in text: return "Server-Side Template Injection"
+    if "path traversal" in text or "directory traversal" in text: return "Path Traversal"
+    if "file upload" in text or "dangerous type" in text: return "Unrestricted File Upload"
+    if "csrf" in text or "cross-site request forgery" in text: return "Cross-Site Request Forgery"
+    if "open redirect" in text or "unvalidated redirect" in text: return "Open Redirect"
+    if "xml external entity" in text or "xxe" in text or "external entity" in text: return "XML External Entity (XXE)"
+    if "server-side request forgery" in text or "ssrf" in text: return "Server-Side Request Forgery"
+    if "weak password" in text or "password hashing" in text: return "Weak Password Hashing"
+    if "md5" in text or "sha1" in text or "weak cryptographic" in text or "risky cryptography" in text: return "Risky Cryptography"
+    if "encryption strength" in text or "tripledes" in text or "3des" in text: return "Inadequate Encryption Strength"
+    if "cleartext sensitive" in text: return "Cleartext Sensitive Data"
+    if "cleartext transmission" in text or "http://" in text: return "Cleartext Transmission"
+    if "sensitive information in logs" in text: return "Sensitive Information in Logs"
+    if "log injection" in text: return "Log Injection"
+    if "insufficient logging" in text: return "Insufficient Logging"
+    if "improper authentication" in text: return "Improper Authentication"
+    if "missing authentication" in text: return "Missing Authentication for Critical Function"
+    if "missing authorization" in text: return "Missing Authorization"
+    if "incorrect authorization" in text: return "Incorrect Authorization"
+    if "improper access control" in text: return "Improper Access Control"
+    if "authorization bypass" in text: return "Authorization Bypass Through User-Controlled Key"
+    return raw.title() if raw else "Unknown Vulnerability"
 
-    description_text = str(
-        description or ""
-    ).lower()
 
-    # --------------------------------------------------------
-    # CWE-95 — Code Injection
-    # Only infer CWE-95 from explicit code-injection indicators.
-    # Do NOT infer it from generic subprocess warnings.
-    # --------------------------------------------------------
+def infer_cwe(vulnerability, description="", source=None, test_id=None, explicit_cwe=None):
+    explicit = _extract_cwe_id(explicit_cwe)
 
-    if (
-        vulnerability_text in {"eval", "exec"}
-        or "code injection" in vulnerability_text
-    ):
-        return "CWE-95"
+    # Bandit may report manual SQL string construction as CWE-704.
+    # CodeSentinel-X classifies this vulnerability under CWE-89 SQL Injection.
+    if explicit == "CWE-704":
+        explicit = "CWE-89"
 
-    # --------------------------------------------------------
-    # CWE-78 — Command Injection
-    # --------------------------------------------------------
+    if explicit:
+        return explicit
+    if source == "bandit" and test_id in BANDIT_CWE_MAP:
+        return BANDIT_CWE_MAP[test_id]
+    text = f"{vulnerability or ''} {description or ''}".lower()
 
-    if (
-        "command injection" in vulnerability_text
-        or "command execution" in vulnerability_text
-    ):
-        return "CWE-78"
-
-    # --------------------------------------------------------
-    # Other CWE mappings
-    # --------------------------------------------------------
-
-    text = (
-        f"{vulnerability_text} {description_text}"
-    )
+    # Match identifier-like detector keywords as whole words.
+    # Without boundaries, "exec" would match "executable" in
+    # unrelated Bandit messages such as B607.
+    identifier_keywords = {"eval", "exec", "pickle"}
 
     for keyword, cwe in CWE_MAP.items():
-
-        # CWE-95 keywords are handled explicitly above.
-        if keyword in {
-            "code injection",
-            "eval",
-            "exec",
-        }:
-            continue
-
-        if keyword in text:
+        if keyword in identifier_keywords:
+            if re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(keyword)}(?![A-Za-z0-9_])",
+                text,
+            ):
+                return cwe
+        elif keyword in text:
             return cwe
-
-    if (
-        "path traversal" in text
-        or "directory traversal" in text
-        or "pathname" in text
-        or "restricted directory" in text
-    ):
-        return "CWE-22"
-
-    if (
-        "unrestricted file upload" in text
-        or "unrestricted upload" in text
-        or "unsafe file upload" in text
-        or "dangerous file type" in text
-    ):
-        return "CWE-434"
 
     return None
 
@@ -258,49 +159,20 @@ def normalize_severity(
     vulnerability="",
     description="",
 ):
-
-    if severity:
-
-        severity = str(
-            severity
-        ).upper()
-
-        if severity in {
-            "CRITICAL",
-            "HIGH",
-            "MEDIUM",
-            "LOW",
-            "INFO",
-        }:
-            return severity
-
-    text = (
-        f"{vulnerability} {description}"
-    ).lower()
-
-    if (
-        "hardcoded" in text
-        or "command injection" in text
-        or "code injection" in text
-        or "unsafe deserialization" in text
-        or "sql injection" in text
-        or "path traversal" in text
-        or "unrestricted file upload" in text
-        or "unrestricted upload" in text
-        or "unsafe file upload" in text
-        or "cross-site request forgery" in text
-        or "csrf" in text
-    ):
+    supplied = str(severity or "").upper()
+    text = f"{vulnerability} {description}".lower()
+    high_indicators = {
+        "hardcoded secret", "command injection", "code injection", "unsafe deserialization",
+        "sql injection", "path traversal", "unrestricted file upload", "cross-site request forgery",
+        "server-side request forgery", "xml external entity", "open redirect", "missing authentication",
+        "missing authorization", "incorrect authorization", "improper authentication", "authorization bypass",
+    }
+    if any(indicator in text for indicator in high_indicators):
         return "HIGH"
-
-    if (
-        "xss" in text
-        or "cross-site scripting" in text
-        or "ssti" in text
-        or "template injection" in text
-    ):
+    if supplied in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}:
+        return supplied
+    if "xss" in text or "cross-site scripting" in text or "ssti" in text or "template injection" in text:
         return "MEDIUM"
-
     return "LOW"
 
 
@@ -376,6 +248,12 @@ def _contains_user_input(node):
                 "uploaded",
                 "uploaded_file",
                 "file",
+
+                # Template values are commonly user-controlled in SSTI
+                "template",
+                "template_string",
+                "jinja_template",
+                "template_data",
             }:
                 return True
 
@@ -410,25 +288,42 @@ def scan_ast(
 
         return findings
 
-    # Pre-pass: collect simple variables derived from user input.
-    # This intentionally does not mark a variable such as `query` as
-    # tainted merely because of its name; its value must actually contain
-    # a recognized user-input source.
-    for statement in ast.walk(tree):
+    # Pre-pass: collect variables derived from user-controlled input.
+    # This is intentionally conservative and performs a few fixed-point
+    # passes so simple flows such as request -> username -> query are
+    # recognized without treating variable names like `query` as tainted.
+    statements = list(ast.walk(tree))
+    for _ in range(8):
+        changed = False
+        for statement in statements:
+            value = None
+            targets = []
 
-        if isinstance(statement, ast.Assign):
-            if _contains_user_input(statement.value):
-                for target in statement.targets:
-                    if isinstance(target, ast.Name):
+            if isinstance(statement, ast.Assign):
+                value = statement.value
+                targets = [t for t in statement.targets if isinstance(t, ast.Name)]
+            elif isinstance(statement, ast.AnnAssign):
+                value = statement.value
+                if isinstance(statement.target, ast.Name):
+                    targets = [statement.target]
+
+            if value is None or not targets:
+                continue
+
+            direct_taint = _contains_user_input(value)
+            propagated_taint = any(
+                isinstance(child, ast.Name) and child.id in tainted_variables
+                for child in ast.walk(value)
+            )
+
+            if direct_taint or propagated_taint:
+                for target in targets:
+                    if target.id not in tainted_variables:
                         tainted_variables.add(target.id)
+                        changed = True
 
-        elif isinstance(statement, ast.AnnAssign):
-            if (
-                statement.value is not None
-                and _contains_user_input(statement.value)
-                and isinstance(statement.target, ast.Name)
-            ):
-                tainted_variables.add(statement.target.id)
+        if not changed:
+            break
 
     for node in ast.walk(tree):
 
@@ -517,8 +412,28 @@ def scan_ast(
 
                     argument = node.args[0]
 
-                    if _contains_user_input(
-                        argument
+                    shell_false = any(
+                        isinstance(keyword, ast.keyword)
+                        and keyword.arg == "shell"
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is False
+                        for keyword in node.keywords
+                    )
+
+                    # subprocess.run(["echo", user], shell=False)
+                    # uses a fixed executable and passes user input as
+                    # an argument. Do not classify that as command
+                    # injection merely because a later argv element
+                    # contains user-controlled data.
+                    fixed_executable_argument = (
+                        isinstance(argument, (ast.List, ast.Tuple))
+                        and len(argument.elts) > 0
+                        and isinstance(argument.elts[0], ast.Constant)
+                        and isinstance(argument.elts[0].value, str)
+                    )
+
+                    if _contains_user_input(argument) and not (
+                        shell_false and fixed_executable_argument
                     ):
 
                         findings.append({
@@ -542,7 +457,6 @@ def scan_ast(
                             "filename":
                                 filename,
                         })
-
             # =================================================
             # CWE-95 â€” CODE INJECTION
             # =================================================
@@ -723,60 +637,44 @@ def scan_ast(
 
             # =================================================
             # CWE-1336 — SSTI
+            # Detect common Flask/Jinja2 template sinks when the template
+            # argument is directly user-controlled or derived from a
+            # user-controlled variable.
+            ssti_sink = False
 
-            if (
-                (
-                    isinstance(
-                        node.func,
-                        ast.Attribute,
-                    )
-                    and node.func.attr in {
-                        "render_template_string",
-                        "from_string",
-                    }
-                )
-                or
-                (
-                    isinstance(
-                        node.func,
-                        ast.Name,
-                    )
-                    and node.func.id == "Template"
-                )
-            ):
+            if isinstance(node.func, ast.Name):
+                ssti_sink = node.func.id in {
+                    "Template",
+                    "render_template_string",
+                }
 
-                if node.args:
+            elif isinstance(node.func, ast.Attribute):
+                ssti_sink = node.func.attr in {
+                    "from_string",
+                    "render_template_string",
+                }
 
-                    template_argument = (
-                        node.args[0]
-                    )
+            if ssti_sink and node.args:
 
-                    if _contains_user_input(
-                        template_argument
-                    ):
+                template_argument = node.args[0]
 
-                        findings.append({
+                if _contains_user_input(template_argument):
 
-                            "vulnerability":
-                                "Server-Side Template Injection",
-
-                            "cwe":
-                                "CWE-1336",
-
-                            "line":
-                                node.lineno,
-
-                            "severity":
-                                "HIGH",
-
-                            "description":
-                                "User-controlled input may be "
-                                "interpreted as a server-side "
-                                "template.",
-
-                            "filename":
-                                filename,
-                        })
+                    findings.append({
+                        "vulnerability":
+                            "Server-Side Template Injection",
+                        "cwe":
+                            "CWE-1336",
+                        "line":
+                            node.lineno,
+                        "severity":
+                            "HIGH",
+                        "description":
+                            "User-controlled input may be interpreted "
+                            "as a server-side template.",
+                        "filename":
+                            filename,
+                    })
 
             # =================================================
             # CWE-22 â€” PATH TRAVERSAL
@@ -2718,6 +2616,348 @@ def scan_ast(
                                         filename,
                                 })
 
+    # Add the extended security-pattern detectors while preserving
+    # the existing detector implementations above.
+    findings.extend(
+        scan_extended_patterns(
+            tree,
+            filename,
+            tainted_variables,
+        )
+    )
+
+    return findings
+
+
+# ============================================================
+# EXTENDED SECURITY PATTERN DETECTORS
+# ============================================================
+
+def scan_extended_patterns(tree, filename, tainted_variables=None):
+    """
+    Additional conservative AST heuristics for the expanded test suite.
+
+    These detectors intentionally report *potential* weaknesses. Static
+    analysis cannot prove exploitability for every framework/application.
+    The findings are therefore designed to be enriched and reviewed by the
+    existing normalization, risk, RAG, repair and closed-loop layers.
+    """
+    findings = []
+    tainted_variables = tainted_variables or set()
+
+    def add(vulnerability, cwe, node, severity, description):
+        findings.append({
+            "vulnerability": vulnerability,
+            "cwe": cwe,
+            "line": getattr(node, "lineno", 1),
+            "severity": severity,
+            "description": description,
+            "filename": filename,
+        })
+
+    def contains_taint(node):
+        if node is None:
+            return False
+        if _contains_user_input(node):
+            return True
+        return any(
+            isinstance(child, ast.Name) and child.id in tainted_variables
+            for child in ast.walk(node)
+        )
+
+    def call_name(call):
+        if not isinstance(call, ast.Call):
+            return ""
+        if isinstance(call.func, ast.Name):
+            return call.func.id.lower()
+        if isinstance(call.func, ast.Attribute):
+            return call.func.attr.lower()
+        return ""
+
+    def attribute_chain(node):
+        parts = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr.lower())
+            node = node.value
+        if isinstance(node, ast.Name):
+            parts.append(node.id.lower())
+        return list(reversed(parts))
+
+    def is_request_value(node):
+        if isinstance(node, ast.Attribute):
+            chain = attribute_chain(node)
+            return len(chain) >= 2 and chain[0] == "request" and chain[1] in {
+                "args", "form", "json", "data", "values", "files"
+            }
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            chain = attribute_chain(node.func)
+            return len(chain) >= 3 and chain[0] == "request" and chain[1] in {
+                "args", "form", "values", "json"
+            } and chain[-1] in {"get", "get_json"}
+        return False
+
+    def is_flask_route(function):
+        methods = set()
+        route = False
+        for decorator in function.decorator_list:
+            if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+                if decorator.func.attr == "route":
+                    route = True
+                    for kw in decorator.keywords:
+                        if kw.arg == "methods" and isinstance(kw.value, (ast.List, ast.Tuple, ast.Set)):
+                            for item in kw.value.elts:
+                                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                                    methods.add(item.value.upper())
+                    if not methods:
+                        methods.add("GET")
+        return route, methods
+
+    # ------------------------------------------------------------
+    # CWE-79 — XSS through Flask return values
+    # ------------------------------------------------------------
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        route, _ = is_flask_route(function)
+        if not route:
+            continue
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Return) or node.value is None:
+                continue
+            if contains_taint(node.value) and isinstance(
+                node.value, (ast.BinOp, ast.JoinedStr, ast.Call)
+            ):
+                add(
+                    "Cross-Site Scripting",
+                    "CWE-79",
+                    node,
+                    "HIGH",
+                    "User-controlled input is returned in generated web content without visible output encoding or escaping.",
+                )
+
+    # ------------------------------------------------------------
+    # CWE-601 — Open Redirect
+    # ------------------------------------------------------------
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = call_name(node)
+        if name != "redirect":
+            continue
+        target = node.args[0] if node.args else None
+        if target is not None and contains_taint(target):
+            add(
+                "Open Redirect",
+                "CWE-601",
+                node,
+                "MEDIUM",
+                "User-controlled redirect target reaches a redirect operation without visible destination validation.",
+            )
+
+    # ------------------------------------------------------------
+    # CWE-611 — XXE
+    # ------------------------------------------------------------
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "XMLParser", "XMLParserBuilder"
+        }:
+            dangerous = False
+            for kw in node.keywords:
+                if kw.arg in {"resolve_entities", "load_dtd", "no_network"}:
+                    if kw.arg in {"resolve_entities", "load_dtd"} and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                        dangerous = True
+            if dangerous:
+                add(
+                    "XML External Entity (XXE)",
+                    "CWE-611",
+                    node,
+                    "HIGH",
+                    "XML parsing is configured to resolve external entities or DTDs, which can enable XXE attacks when parsing untrusted XML.",
+                )
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {"fromstring", "parse"}:
+            if isinstance(node.func.value, ast.Name) and node.func.value.id.lower() in {"etree", "etree_elementtree", "elementtree"}:
+                if node.args and contains_taint(node.args[0]):
+                    add(
+                        "XML External Entity (XXE)",
+                        "CWE-611",
+                        node,
+                        "HIGH",
+                        "Untrusted XML reaches an XML parser without visible hardened entity/DTD configuration.",
+                    )
+
+    # ------------------------------------------------------------
+    # CWE-327 / CWE-916 — weak cryptography and password hashing
+    # ------------------------------------------------------------
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        chain = attribute_chain(node.func) if isinstance(node.func, ast.Attribute) else []
+        algo = chain[-1] if chain else ""
+
+        if chain[:1] == ["hashlib"] and algo in {"md5", "sha1", "sha", "md4"}:
+            password_context = any(
+                isinstance(child, ast.Name) and any(k in child.id.lower() for k in {"password", "passwd", "passphrase", "credential"})
+                for arg in node.args for child in ast.walk(arg)
+            )
+            if password_context:
+                add(
+                    "Weak Password Hashing",
+                    "CWE-916",
+                    node,
+                    "HIGH",
+                    "A password-related value is hashed with a fast or cryptographically weak digest instead of a password-hashing function such as Argon2, scrypt, or bcrypt.",
+                )
+            else:
+                add(
+                    "Risky Cryptography",
+                    "CWE-327",
+                    node,
+                    "MEDIUM",
+                    f"Use of the weak or obsolete {algo.upper()} digest may provide inadequate cryptographic protection.",
+                )
+
+        if algo in {"des", "des3", "tripledes", "blowfish"}:
+            add(
+                "Risky Cryptography",
+                "CWE-327",
+                node,
+                "HIGH",
+                f"Use of {algo.upper()} cryptography is potentially obsolete or unsuitable for modern security requirements.",
+            )
+
+    # ------------------------------------------------------------
+    # CWE-326 — inadequate encryption strength
+    # ------------------------------------------------------------
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute):
+            chain = attribute_chain(node.func)
+            if chain[-1:] == ["new"] and any(part in {"des3", "tripledes", "des"} for part in chain):
+                add(
+                    "Inadequate Encryption Strength",
+                    "CWE-326",
+                    node,
+                    "HIGH",
+                    "A legacy or weak block cipher is used where stronger modern cryptography is expected.",
+                )
+
+    # ------------------------------------------------------------
+    # CWE-312 / CWE-532 / CWE-117 — sensitive data in logs and log injection
+    # ------------------------------------------------------------
+    log_methods = {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
+    sensitive_words = {"password", "passwd", "secret", "token", "api_key", "apikey", "credit_card", "card_number", "ssn", "cvv"}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr.lower() not in log_methods:
+            continue
+
+        rendered = []
+        for arg in node.args:
+            for child in ast.walk(arg):
+                if isinstance(child, ast.Name):
+                    rendered.append(child.id.lower())
+                elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                    rendered.append(child.value.lower())
+                elif isinstance(child, ast.Attribute):
+                    rendered.append(child.attr.lower())
+
+        text = " ".join(rendered)
+        has_sensitive = any(word in text for word in sensitive_words)
+        has_user_input = any(
+            contains_taint(arg) or is_request_value(arg)
+            for arg in node.args
+        )
+
+        if has_sensitive:
+            cwe = "CWE-532" if any(
+                word in text for word in {"password", "passwd", "secret", "token", "api_key", "apikey"}
+            ) else "CWE-312"
+            add(
+                "Sensitive Information in Logs" if cwe == "CWE-532" else "Cleartext Sensitive Data",
+                cwe,
+                node,
+                "HIGH",
+                "Sensitive information is written to application logs and may be exposed through log storage or monitoring systems.",
+            )
+        elif has_user_input:
+            add(
+                "Log Injection",
+                "CWE-117",
+                node,
+                "MEDIUM",
+                "User-controlled input reaches a logging operation without visible sanitization or structured logging controls.",
+            )
+
+    # ------------------------------------------------------------
+    # CWE-319 — cleartext transmission
+    # ------------------------------------------------------------
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        value = node.value.lower()
+        if value.startswith("http://") and any(
+            marker in value for marker in {"login", "auth", "password", "token", "user", "api", "/"}
+        ):
+            add(
+                "Cleartext Transmission of Sensitive Information",
+                "CWE-319",
+                node,
+                "HIGH",
+                "An HTTP URL is used for communication that may carry application or authentication data; HTTPS should be used for protected communication.",
+            )
+
+    # Also detect outbound HTTP calls whose URL is an explicit http:// literal.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = call_name(node)
+        if name not in {"get", "post", "put", "patch", "delete", "request", "urlopen"}:
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.lower().startswith("http://"):
+                add(
+                    "Cleartext Transmission of Sensitive Information",
+                    "CWE-319",
+                    node,
+                    "HIGH",
+                    "An outbound request uses cleartext HTTP instead of HTTPS.",
+                )
+                break
+
+    # ------------------------------------------------------------
+    # CWE-287 — improper authentication
+    # ------------------------------------------------------------
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if isinstance(node.test, ast.Compare) and len(node.test.ops) == 1 and isinstance(node.test.ops[0], ast.Eq):
+            names = [
+                child.id.lower()
+                for child in ast.walk(node.test)
+                if isinstance(child, ast.Name)
+            ]
+            constants = [
+                child.value
+                for child in ast.walk(node.test)
+                if isinstance(child, ast.Constant) and isinstance(child.value, str)
+            ]
+            if any(name in {"username", "user", "login", "userid"} for name in names) and any(
+                str(value).lower() in {"admin", "administrator", "root", "user"} for value in constants
+            ):
+                add(
+                    "Improper Authentication",
+                    "CWE-287",
+                    node,
+                    "HIGH",
+                    "Authentication is implemented using a simple hardcoded identity comparison rather than a robust credential or identity-verification mechanism.",
+                )
+
+
     return findings
 
 
@@ -2782,10 +3022,23 @@ def scan_bandit(
 
             return findings
 
+        supported_bandit_tests = set(BANDIT_CWE_MAP)
+
         for item in data.get(
             "results",
             [],
         ):
+            test_id = item.get("test_id")
+
+            if test_id in BANDIT_IMPORT_ADVISORIES:
+                continue
+
+            # Only promote Bandit rules that CodeSentinel-X explicitly
+            # maps to a supported CWE. This prevents unrelated Bandit
+            # hardening advisories such as B607 from becoming false
+            # vulnerability classes in the unified pipeline.
+            if test_id not in supported_bandit_tests:
+                continue
 
             findings.append({
 
@@ -2800,6 +3053,9 @@ def scan_bandit(
 
                 "source":
                     "bandit",
+
+                "test_id":
+                    test_id,
 
                 "line":
                     item.get(
@@ -2950,6 +3206,9 @@ def scan_semgrep(
                 "cwe":
                     cwe_value,
 
+                "source":
+                    "semgrep",
+
                 "line":
                     item.get(
                         "start",
@@ -3004,131 +3263,92 @@ def scan_semgrep(
 # FINDING NORMALIZER
 # ============================================================
 
-def normalize_finding(
-    finding,
-):
-
-    vulnerability = (
-        normalize_vulnerability(
-            finding.get(
-                "vulnerability",
-                "",
-            )
-        )
-    )
-
-    description = finding.get(
-        "description",
-        "",
-    )
-
-    cwe = finding.get(
-        "cwe"
-    )
-
-    if cwe is None and finding.get("source") != "bandit":
-        cwe = infer_cwe(
-        vulnerability,
+def normalize_finding(finding):
+    source = finding.get("source")
+    test_id = finding.get("test_id")
+    description = finding.get("description", "") or ""
+    cwe = infer_cwe(
+        finding.get("vulnerability", ""),
         description,
+        source=source,
+        test_id=test_id,
+        explicit_cwe=finding.get("cwe"),
     )
-
-    severity = normalize_severity(
-
-        finding.get(
-            "severity"
-        ),
-
-        vulnerability,
-
-        description,
+    vulnerability = normalize_vulnerability(
+        finding.get("vulnerability", ""),
+        description=description,
+        cwe=cwe,
+        source=source,
+        test_id=test_id,
     )
-
-    return {
-
+    severity = normalize_severity(finding.get("severity"), vulnerability, description)
+    result = {
         **finding,
-
-        "vulnerability":
-            vulnerability,
-
-        "cwe":
-            cwe,
-
-        "severity":
-            severity,
-
-        "description":
-            description,
+        "vulnerability": vulnerability,
+        "cwe": cwe,
+        "severity": severity,
+        "description": description,
     }
+    if cwe:
+        result["cwe_name"] = CWE_NAMES.get(cwe, "")
+    return result
+
+
+def _finding_priority(finding):
+    return {"ast": 3, "semgrep": 2, "bandit": 1}.get(str(finding.get("source", "")).lower(), 0)
+
+
+def _merge_findings(existing, incoming):
+    primary = incoming if _finding_priority(incoming) > _finding_priority(existing) else existing
+    secondary = existing if primary is incoming else incoming
+    merged = dict(primary)
+    sources = []
+    for item in (existing, incoming):
+        src = item.get("source")
+        if src and src not in sources:
+            sources.append(src)
+    if sources:
+        merged["sources"] = sources
+    rank = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+    if rank.get(secondary.get("severity", "LOW"), 1) > rank.get(merged.get("severity", "LOW"), 1):
+        merged["severity"] = secondary["severity"]
+    if not merged.get("description") and secondary.get("description"):
+        merged["description"] = secondary["description"]
+    return merged
+
+
+def _deduplicate_findings(findings):
+    merged = {}
+    for finding in findings:
+        cwe = finding.get("cwe")
+        line = finding.get("line")
+        key = (cwe, line) if cwe else (None, line, finding.get("vulnerability", ""))
+        if key in merged:
+            merged[key] = _merge_findings(merged[key], finding)
+        else:
+            merged[key] = finding
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            item.get("line") if isinstance(item.get("line"), int) else 10**9,
+            item.get("cwe") or "",
+            item.get("vulnerability") or "",
+        ),
+    )
 
 
 # ============================================================
 # UNIFIED SECURITY ANALYZER
 # ============================================================
 
-def analyze_security(
-    code,
-    filename="<string>",
-):
-
-    ast_findings = scan_ast(
-        code,
-        filename,
-    )
-
-    bandit_findings = scan_bandit(
-        code,
-        filename,
-    )
-
-    semgrep_findings = scan_semgrep(
-        code,
-        filename,
-    )
-
+def analyze_security(code, filename="<string>"):
     raw_findings = (
-        ast_findings
-        + bandit_findings
-        + semgrep_findings
+        scan_ast(code, filename)
+        + scan_bandit(code, filename)
+        + scan_semgrep(code, filename)
     )
-
-    normalized_findings = []
-
-    seen = set()
-
-    for finding in raw_findings:
-
-        normalized = (
-            normalize_finding(
-                finding
-            )
-        )
-
-        key = (
-
-            normalized.get(
-                "cwe"
-            ),
-
-            normalized.get(
-                "line"
-            ),
-
-            normalized.get(
-                "vulnerability"
-            ),
-        )
-
-        if key not in seen:
-
-            seen.add(
-                key
-            )
-
-            normalized_findings.append(
-                normalized
-            )
-
-    return normalized_findings
+    normalized_findings = [normalize_finding(finding) for finding in raw_findings]
+    return _deduplicate_findings(normalized_findings)
 
 
 # ============================================================
